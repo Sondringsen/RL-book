@@ -4,7 +4,7 @@
 
 This project proposes to study **market making as a sequential decision-making problem** using the tools of Markov Decision Processes (MDPs), Dynamic Programming (DP), and Reinforcement Learning (RL). The goal is to train an agent that dynamically sets bid and ask quotes in an electronic limit order market while managing inventory risk, adverse selection from informed traders, tail events, regime changes, and operational constraints such as volume limits and overnight risk.
 
-Market making is a canonical problem in quantitative finance and stochastic control. Classical solutions (e.g., Avellaneda–Stoikov) rely on stylized assumptions and closed-form approximations. In practice, markets exhibit nonstationarity, fat tails, informed order flow, and microstructure effects that violate these assumptions. This makes market making an ideal testbed for RL: the agent must learn robust policies in a noisy, partially predictable, and evolving environment.
+Market making is a canonical problem in quantitative finance and stochastic control. Classical solutions (e.g., Avellaneda–Stoikov) rely on stylized assumptions and closed-form approximations. In practice, markets exhibit nonstationarity, fat tails, informed order flow, and microstructure effects that violate these assumptions. We want to use RL to train agents to learn robust policies in a noisy, partially predictable, and evolving environment.
 
 The project is structured to align with the three phases outlined in the course project description, with progressively richer models and environments.
 
@@ -44,16 +44,9 @@ Optionally extended to include quote sizes $q_t^{bid}, q_t^{ask}$.
 
 #### Dynamics
 
-* Mid-price follows a stochastic process with regime-dependent dynamics:
-  $$
-  dp_t = \mu(R_t)dt + \sigma(R_t)dW_t + dJ_t
-  $$
-  where $dJ_t$ captures jump (tail) events.
+* Mid-price follows a stochastic process with regime-dependent dynamics: $dp_t = \mu(R_t)dt + \sigma(R_t)dW_t + dJ_t$ where $dJ_t$ captures jump (tail) events.
 
-* Order arrivals follow Hawkes or Poisson processes with intensities depending on spreads and regime:
-  $$
-  \lambda^{buy}(\delta^{ask}), \quad \lambda^{sell}(\delta^{bid})
-  $$
+* Order arrivals follow Hawkes or Poisson processes with intensities depending on spreads and regime: $\lambda^{buy}(\delta^{ask}), \quad \lambda^{sell}(\delta^{bid})$
 
 * Inventory evolves based on executions.
 
@@ -64,7 +57,7 @@ Optionally extended to include quote sizes $q_t^{bid}, q_t^{ask}$.
 Risk-adjusted PnL with penalties:
 
 $$
-r_t = \text{PnL}*t - \alpha I_t^2 - \beta |\Delta I_t| - \gamma \mathbb{I}*{\text{tail event}}
+r_t = \text{PnL}\cdot t - \alpha I_t^2 - \beta |\Delta I_t| - \gamma \mathbb{I}\cdot{\text{tail event}}
 $$
 
 Where:
@@ -93,18 +86,20 @@ This is the version targeted in **Phase 3**.
 Simplifications:
 
 * Discrete time ($\Delta t$)
-* Discrete inventory grid: $I_t \in {-I_{max}, ..., I_{max}}$
+* Discrete inventory grid: $I_t \in \lbrace-I_{max}, ..., I_{max}\rbrace$
 * Finite action set of spread pairs
 * Observable volatility proxy instead of latent regime
 
 State:
+
 $$
 s_t = (p_t, I_t, \sigma_t)
 $$
 
 Action:
+
 $$
-a_t \in {(\delta_i^{bid}, \delta_j^{ask})}
+a_t \in \lbrace(\delta_i^{bid}, \delta_j^{ask})\rbrace
 $$
 
 Dynamics driven by simulated order flow calibrated to real data.
@@ -122,16 +117,19 @@ Simplifications:
 * Symmetric spreads
 
 State:
+
 $$
 s_t = I_t
 $$
 
-Action:
+Action (because we assume symmetric spreads and known midprice we don't only need to quote one price as the other can be inferred):
+
 $$
-a_t = \delta_t \in {\delta_1, ..., \delta_n}
+a_t = \delta_t \in \lbrace\delta_1, ..., \delta_n\rbrace
 $$
 
 Reward:
+
 $$
 r_t = \text{spread capture} - \alpha I_t^2
 $$
@@ -211,16 +209,3 @@ State normalization and reward shaping are critical.
 * Performance across regimes
 * Stability under tail events
 
----
-
-## 5. Expected Contributions
-
-* A unified MDP framework reusable across DP and RL
-* Empirical comparison of classical vs RL-based market making
-* Insights into robustness under adverse selection and regime change
-
----
-
-## 6. Conclusion
-
-This project frames market making as a principled stochastic control problem, progressing from tractable DP formulations to realistic RL-based solutions. It directly addresses practical risks faced by real-world market makers while remaining aligned with the course’s learning objectives and timeline.
