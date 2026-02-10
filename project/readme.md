@@ -2,7 +2,7 @@
 
 ## 1. Overview and Motivation
 
-This project proposes to study **market making as a sequential decision-making problem** using the tools of Markov Decision Processes (MDPs), Dynamic Programming (DP), and Reinforcement Learning (RL). The goal is to train an agent that dynamically sets bid and ask quotes in an electronic limit order market while managing inventory risk, adverse selection from informed traders, tail events, regime changes, and operational constraints such as volume limits and overnight risk.
+This project proposes to study market making as a sequential decision-making problem using the tools of Markov Decision Processes (MDPs), Dynamic Programming (DP), and Reinforcement Learning (RL). The goal is to train an agent that dynamically sets bid and ask quotes in an electronic limit order market while managing inventory risk, adverse selection from informed traders, tail events, regime changes, and operational constraints such as volume limits and overnight risk.
 
 Market making is a canonical problem in quantitative finance and stochastic control. Classical solutions (e.g., Avellaneda–Stoikov) rely on stylized assumptions and closed-form approximations. In practice, markets exhibit nonstationarity, fat tails, informed order flow, and microstructure effects that violate these assumptions. We want to use RL to train agents to learn robust policies in a noisy, partially predictable, and evolving environment.
 
@@ -57,13 +57,14 @@ Optionally extended to include quote sizes $q_t^{bid}, q_t^{ask}$.
 Risk-adjusted PnL with penalties:
 
 $$
-r_t = \text{PnL}\cdot t - \alpha I_t^2 - \beta |\Delta I_t| - \gamma \mathbb{I}\cdot{\text{tail event}}
+r_t = \text{PnL}\cdot t - \alpha I_t^2 - \beta |\Delta I_t| - \eta \cdot \text{slippage}(\Delta I_t, \sigma_t) - \gamma \mathbb{I}_{\text{tail event}}
 $$
 
 Where:
 
 * $\alpha$: inventory risk
 * $\beta$: transaction/impact cost
+* $\eta$: slippage cost (execution price degradation vs. quoted price; often modeled as $\propto \sigma_t |\Delta I_t|$ or $\propto |\Delta I_t|^2$ to capture market impact)
 * $\gamma$: tail-risk penalty
 
 #### Practical Risks Modeled
@@ -71,6 +72,7 @@ Where:
 * Inventory risk via quadratic penalties
 * Overnight risk via terminal inventory liquidation costs
 * Informed traders via adverse selection (price moves after fills)
+* Slippage via execution price degradation (quote is hit but fills occur at worse prices due to queue position, partial fills, or latency)
 * Tail events via jump processes
 * Regime changes via latent state
 * Volume constraints via max quote size or participation limits
@@ -108,7 +110,7 @@ Dynamics driven by simulated order flow calibrated to real data.
 
 ### 2.3 DP-Solvable (Phase 2) Version
 
-This is the **most simplified model**, designed for DP/ADP.
+This is the most simplified model, designed for DP/ADP.
 
 Simplifications:
 
@@ -131,8 +133,10 @@ $$
 Reward:
 
 $$
-r_t = \text{spread capture} - \alpha I_t^2
+r_t = \text{spread capture} - \alpha I_t^2 - \eta \cdot \text{slippage}(\Delta I_t)
 $$
+
+With slippage modeled simply as $\eta |\Delta I_t|$ or $\eta (\Delta I_t)^2$ to capture that larger trades incur worse average execution prices.
 
 This version highlights the inventory–profit tradeoff and motivates RL by exposing the curse of dimensionality.
 
@@ -166,7 +170,7 @@ $$
 
 Where $I'$ depends on execution probabilities.
 
-This phase demonstrates **why DP breaks down** as realism is added.
+This phase demonstrates why DP breaks down as realism is added. The simplifications required one-dimensional state, known transition dynamics, and discrete actions which make value iteration tractable. Adding volatility, regimes, or adverse selection would blow up the state space and and make DP intractable.
 
 ---
 
@@ -179,10 +183,11 @@ This phase demonstrates **why DP breaks down** as realism is added.
 
   * Stochastic volatility
   * Adverse selection (post-fill price drift)
+  * Slippage (fills at worse-than-quoted prices)
   * Volume constraints
   * Regime switching
 
-Synthetic data is used first, followed by **out-of-sample testing on real data** for evaluation only.
+Synthetic data is used first, followed by out-of-sample testing on real data for evaluation only.
 
 ### 4.2 RL Algorithm
 
@@ -192,7 +197,6 @@ Candidate methods:
 * Actor–Critic (e.g., PPO) for continuous spreads
 * Distributional RL to capture tail risk
 
-State normalization and reward shaping are critical.
 
 ### 4.3 Constraints and Extensions
 
