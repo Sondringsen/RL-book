@@ -3,7 +3,7 @@
 
 Outputs
 -------
-  results/phase2_dp_analysis.png   value fn, policy, convergence, α-sensitivity
+  results/phase2_dp_analysis.png   value fn, policy, convergence, skew sensitivity
   results/phase2_simulation.png    reward & inventory histograms from rollouts
 """
 
@@ -19,15 +19,16 @@ def main():
     os.makedirs("results", exist_ok=True)
     params = MarketParams()
 
-    # ── print model summary ──────────────────────────────────────────
     print("=" * 60)
     print("Phase 2: Dynamic Programming Solution")
     print("=" * 60)
-    print(f"  Inventory grid : I ∈ [{-params.max_inventory}, {params.max_inventory}]")
-    print(f"  Spread options : δ ∈ {params.spread_options}")
-    print(f"  Arrival rate   : λ(δ) = {params.arrival_base}·exp(−{params.arrival_decay}·δ)")
-    print(f"  Inv. penalty α : {params.inventory_penalty}")
-    print(f"  Discount γ     : {params.discount}")
+    print(f"  Inventory grid      : I ∈ [{-params.max_inventory}, {params.max_inventory}]")
+    print(f"  Spread options      : δ ∈ {params.spread_options}")
+    print(f"  Action space        : {params.n_actions} (δ_bid, δ_ask) pairs")
+    print(f"  Arrival rate        : λ(δ) = {params.arrival_base}·exp(−{params.arrival_decay}·δ)")
+    print(f"  Adverse selection   : {params.adverse_selection}")
+    print(f"  Inv. penalty α      : {params.inventory_penalty}")
+    print(f"  Discount γ          : {params.discount}")
     print()
     print("  Fill probabilities per spread:")
     for d in params.spread_options:
@@ -38,17 +39,20 @@ def main():
     V, policy, residuals = value_iteration(params)
 
     inventories = params.inventory_states
-    opt_spreads = np.array(
-        [params.spread_options[policy[i]] for i in range(params.n_inventory_states)]
-    )
 
     print("\nOptimal policy (π*):")
-    print(f"  {'I':>4s}  {'δ*':>5s}  {'V(I)':>10s}")
-    print(f"  {'─'*4}  {'─'*5}  {'─'*10}")
+    print(f"  {'I':>4s}  {'δ*_bid':>7s}  {'δ*_ask':>7s}  {'V(I)':>10s}")
+    print(f"  {'─'*4}  {'─'*7}  {'─'*7}  {'─'*10}")
     for i, I in enumerate(inventories):
-        print(f"  {I:>4d}  {opt_spreads[i]:>5.1f}  {V[i]:>10.4f}")
+        db, da = params.action_to_spreads(policy[i])
+        print(f"  {I:>4d}  {db:>7.1f}  {da:>7.1f}  {V[i]:>10.4f}")
 
     # ── analysis plots ───────────────────────────────────────────────
+    opt_bids = np.array([params.action_to_spreads(policy[i])[0]
+                         for i in range(params.n_inventory_states)])
+    opt_asks = np.array([params.action_to_spreads(policy[i])[1]
+                         for i in range(params.n_inventory_states)])
+
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
     axes[0, 0].plot(inventories, V, "b-o", markersize=5)
@@ -57,10 +61,12 @@ def main():
     axes[0, 0].set_title("Value Function")
     axes[0, 0].grid(True, alpha=0.3)
 
-    axes[0, 1].step(inventories, opt_spreads, "r-o", where="mid", markersize=5)
+    axes[0, 1].step(inventories, opt_bids, "b-o", where="mid", ms=5, label="δ*_bid")
+    axes[0, 1].step(inventories, opt_asks, "r-s", where="mid", ms=5, label="δ*_ask")
     axes[0, 1].set_xlabel("Inventory  I")
-    axes[0, 1].set_ylabel("Optimal half-spread  δ*")
-    axes[0, 1].set_title("Optimal Policy  π*(I)")
+    axes[0, 1].set_ylabel("Half-spread")
+    axes[0, 1].set_title("Optimal Policy  π*(I): Bid & Ask Spreads")
+    axes[0, 1].legend()
     axes[0, 1].grid(True, alpha=0.3)
 
     axes[1, 0].semilogy(residuals)
@@ -69,16 +75,20 @@ def main():
     axes[1, 0].set_title("Convergence of Value Iteration")
     axes[1, 0].grid(True, alpha=0.3)
 
-    # α sensitivity
+    # α sensitivity — policy skew (δ_bid − δ_ask) vs I
     alphas = [0.0, 0.005, 0.01, 0.02, 0.05]
-    for alpha in alphas:
-        p_a = MarketParams(inventory_penalty=alpha)
+    for alpha_val in alphas:
+        p_a = MarketParams(inventory_penalty=alpha_val)
         _, pol_a, _ = value_iteration(p_a, verbose=False)
-        spreads_a = [p_a.spread_options[pol_a[i]] for i in range(p_a.n_inventory_states)]
-        axes[1, 1].plot(inventories, spreads_a, "-o", ms=4, label=f"α = {alpha}")
+        skew = []
+        for i in range(p_a.n_inventory_states):
+            db, da = p_a.action_to_spreads(pol_a[i])
+            skew.append(db - da)
+        axes[1, 1].plot(inventories, skew, "-o", ms=4, label=f"α = {alpha_val}")
+    axes[1, 1].axhline(0, color="gray", ls=":", lw=0.8)
     axes[1, 1].set_xlabel("Inventory  I")
-    axes[1, 1].set_ylabel("Optimal half-spread  δ*")
-    axes[1, 1].set_title("Policy Sensitivity to Inventory Penalty  α")
+    axes[1, 1].set_ylabel("Skew  (δ*_bid − δ*_ask)")
+    axes[1, 1].set_title("Policy Skew Sensitivity to α")
     axes[1, 1].legend()
     axes[1, 1].grid(True, alpha=0.3)
 
@@ -123,17 +133,27 @@ def main():
 
     # ── arrival-rate sensitivity ─────────────────────────────────────
     print("\nArrival-rate sensitivity …")
-    fig3, ax3 = plt.subplots(figsize=(7, 5))
+    fig3, axes3 = plt.subplots(1, 2, figsize=(14, 5))
     for A in [0.3, 0.5, 0.8, 1.2]:
         p_ar = MarketParams(arrival_base=A)
         _, pol_ar, _ = value_iteration(p_ar, verbose=False)
-        sp = [p_ar.spread_options[pol_ar[i]] for i in range(p_ar.n_inventory_states)]
-        ax3.plot(inventories, sp, "-o", ms=4, label=f"A = {A}")
-    ax3.set_xlabel("Inventory  I")
-    ax3.set_ylabel("Optimal half-spread  δ*")
-    ax3.set_title("Policy Sensitivity to Arrival Rate  A")
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
+        bids_ar, asks_ar = [], []
+        for i in range(p_ar.n_inventory_states):
+            db, da = p_ar.action_to_spreads(pol_ar[i])
+            bids_ar.append(db)
+            asks_ar.append(da)
+        axes3[0].plot(inventories, bids_ar, "-o", ms=4, label=f"A = {A}")
+        axes3[1].plot(inventories, asks_ar, "-o", ms=4, label=f"A = {A}")
+    axes3[0].set_xlabel("Inventory  I")
+    axes3[0].set_ylabel("δ*_bid")
+    axes3[0].set_title("Bid Spread Sensitivity to Arrival Rate A")
+    axes3[0].legend()
+    axes3[0].grid(True, alpha=0.3)
+    axes3[1].set_xlabel("Inventory  I")
+    axes3[1].set_ylabel("δ*_ask")
+    axes3[1].set_title("Ask Spread Sensitivity to Arrival Rate A")
+    axes3[1].legend()
+    axes3[1].grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig("results/phase2_arrival_sensitivity.png", dpi=150)
     print("→ saved results/phase2_arrival_sensitivity.png")

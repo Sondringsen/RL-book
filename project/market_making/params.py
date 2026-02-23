@@ -1,25 +1,25 @@
 """Phase 1: MDP formulation for market making.
 
-The market maker posts symmetric bid/ask quotes at  mid - δ  and  mid + δ.
+The market maker posts asymmetric bid/ask quotes at
+    bid = mid − δ_bid,   ask = mid + δ_ask.
 Customer orders arrive as independent Poisson processes with intensity
-    λ(δ) = A · exp(-k · δ)
-where tighter spreads attract more flow but expose the agent to inventory risk.
+    λ(δ) = A · exp(−k · δ)
+where tighter spreads attract more flow but expose the agent to
+inventory risk.
+
+Adverse selection: fills carry information about the subsequent price
+move.  When someone buys from us (ask fill), the price tends to rise;
+when someone sells to us (bid fill), the price tends to fall.
 
 Simplified (DP-solvable) MDP — Phase 2
-    State:   I_t ∈ {-I_max, …, I_max}           (inventory only)
-    Action:  δ_t ∈ {δ_1, …, δ_n}                (half-spread)
-    Reward:  spread_captured − α I²              (profit vs. inventory penalty)
-
-    Mid-price is a random walk with constant σ; because E[ΔP]=0 the price
-    dimension drops out and value iteration is tractable in O(|I|·|A|).
+    State:   I_t ∈ {−I_max, …, I_max}           (inventory only)
+    Action:  (δ_bid, δ_ask) pair                  (asymmetric half-spreads)
+    Reward:  spread_captured + E[inv_pnl] − α I²
 
 Extended (RL-solvable) MDP — Phase 3
     State:   (I_t, σ_t)  with σ_t following an OU process
-    Action:  same discrete set
-    Reward:  spread_captured + I·Δp − α I²       (includes price-move P&L)
-
-    The stochastic volatility makes the optimal spread depend on σ_t,
-    which DP cannot capture without blowing up the state space.
+    Action:  same discrete set of (δ_bid, δ_ask) pairs
+    Reward:  spread_captured + I·Δp − α I²
 """
 
 from dataclasses import dataclass
@@ -34,25 +34,28 @@ class MarketParams:
 
     # ── Price dynamics ───────────────────────────────────────────────
     initial_price: float = 100.0
-    sigma_base: float = 1.0          # constant vol used in Phase 2
+    sigma_base: float = 1.0
 
     # OU volatility dynamics (Phase 3 only)
-    vol_mean_reversion: float = 0.15  # κ
-    vol_long_run_mean: float = 1.0    # σ̄
-    vol_of_vol: float = 0.2           # ξ
+    vol_mean_reversion: float = 0.15
+    vol_long_run_mean: float = 1.0
+    vol_of_vol: float = 0.2
 
     # ── Order arrival  λ(δ) = A · exp(−k · δ) ───────────────────────
-    arrival_base: float = 0.5         # A
-    arrival_decay: float = 1.5        # k
+    arrival_base: float = 0.5
+    arrival_decay: float = 1.5
+
+    # ── Adverse selection ────────────────────────────────────────────
+    adverse_selection: float = 0.2   # E[Δp] shift per fill direction
 
     # ── Inventory ────────────────────────────────────────────────────
     max_inventory: int = 5
 
     # ── Reward ───────────────────────────────────────────────────────
-    inventory_penalty: float = 0.01   # α  (quadratic penalty per step)
-    terminal_penalty: float = 1.0     # per-unit liquidation cost at T
+    inventory_penalty: float = 0.01
+    terminal_penalty: float = 1.0
 
-    # ── Discrete action set (half-spreads in ticks) ──────────────────
+    # ── Discrete spread options (each side picks independently) ──────
     spread_options: Tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 2.5)
 
     # ── Episode / discount ───────────────────────────────────────────
@@ -60,9 +63,15 @@ class MarketParams:
     discount: float = 0.99
 
     # ── Derived helpers ──────────────────────────────────────────────
+
+    @property
+    def n_spread_options(self) -> int:
+        return len(self.spread_options)
+
     @property
     def n_actions(self) -> int:
-        return len(self.spread_options)
+        """Action space = all (δ_bid, δ_ask) pairs."""
+        return len(self.spread_options) ** 2
 
     @property
     def n_inventory_states(self) -> int:
@@ -72,8 +81,19 @@ class MarketParams:
     def inventory_states(self) -> np.ndarray:
         return np.arange(-self.max_inventory, self.max_inventory + 1)
 
+    def action_to_spreads(self, action_idx: int) -> Tuple[float, float]:
+        """Map flat action index → (δ_bid, δ_ask)."""
+        n = len(self.spread_options)
+        bid_idx = action_idx // n
+        ask_idx = action_idx % n
+        return self.spread_options[bid_idx], self.spread_options[ask_idx]
+
+    def spreads_to_action(self, bid_idx: int, ask_idx: int) -> int:
+        """Map (bid_index, ask_index) → flat action index."""
+        return bid_idx * len(self.spread_options) + ask_idx
+
     def fill_probability(self, spread: float) -> float:
-        """P(fill on one side in one time-step) = 1 − exp(−λ(δ))."""
+        """P(≥1 arrival on one side) = 1 − exp(−λ(δ)), Poisson discretised."""
         intensity = self.arrival_base * np.exp(-self.arrival_decay * spread)
         return 1.0 - np.exp(-intensity)
 

@@ -1,19 +1,20 @@
 """Phase 2: value-iteration solver for the simplified (inventory-only) MDP.
 
-Bellman equation
-----------------
-    V(I) = max_δ  Σ_{I'} P(I'|I,δ) · [r(I,δ,I') + γ V(I')]
+Bellman equation (asymmetric spreads + adverse selection)
+---------------------------------------------------------
+    V(I) = max_{δ_bid, δ_ask}  Σ_{I'} P(I'|I,δ) · [r(I,δ,I') + γ V(I')]
 
-Transition probabilities (p = fill_probability(δ)):
+Transitions (p_b = fill_prob(δ_bid), p_a = fill_prob(δ_ask)):
     Interior I:
-        P(I  |I,δ) = p² + (1-p)²     (both fill or neither)
-        P(I-1|I,δ) = p(1-p)           (ask fills only → sell 1)
-        P(I+1|I,δ) = (1-p)p           (bid fills only → buy 1)
+        P(I  |I,δ) = p_b·p_a + (1−p_b)(1−p_a)
+        P(I−1|I,δ) = (1−p_b)·p_a             (ask fills only → sell 1)
+        P(I+1|I,δ) = p_b·(1−p_a)             (bid fills only → buy 1)
     Boundary I = I_max:   only the ask side is active.
-    Boundary I = -I_max:  only the bid side is active.
+    Boundary I = −I_max:  only the bid side is active.
 
-Rewards include spread capture and a quadratic inventory penalty
-applied to the *resulting* inventory I'.
+Adverse selection: E[Δp | fills] = adverse · (ask_fill − bid_fill).
+The expected inventory P&L (post-fill I' × E[Δp]) is folded into
+the immediate reward for each fill scenario.
 """
 
 import numpy as np
@@ -27,12 +28,12 @@ def value_iteration(
     max_iter: int = 10000,
     verbose: bool = True,
 ):
-    """Run value iteration.
+    """Run value iteration with asymmetric spreads and adverse selection.
 
     Returns
     -------
     V : ndarray, shape (n_states,)
-    policy : ndarray[int], shape (n_states,)  — action indices
+    policy : ndarray[int], shape (n_states,)  — flat action indices
     residuals : list[float]
     """
     n_s = params.n_inventory_states
@@ -40,6 +41,7 @@ def value_iteration(
     I_max = params.max_inventory
     gamma = params.discount
     alpha = params.inventory_penalty
+    adv = params.adverse_selection
 
     V = np.zeros(n_s)
     policy = np.zeros(n_s, dtype=int)
@@ -53,32 +55,43 @@ def value_iteration(
 
             best_q, best_a = -np.inf, 0
             for a in range(n_a):
-                delta = params.spread_options[a]
-                p = params.fill_probability(delta)
+                d_bid, d_ask = params.action_to_spreads(a)
+                p_b = params.fill_probability(d_bid)
+                p_a = params.fill_probability(d_ask)
 
                 at_upper = I >= I_max
                 at_lower = I <= -I_max
 
-                if at_upper and at_lower:               # degenerate I_max == 0
+                if at_upper and at_lower:
                     q = -alpha * I**2 + gamma * V[s]
 
-                elif at_upper:                           # only ask active
+                elif at_upper:                           # bid blocked
                     s_ask = params.inventory_to_index(I - 1)
-                    q = (p     * (delta - alpha * (I - 1)**2 + gamma * V[s_ask])
-                         + (1 - p) * (      - alpha * I**2      + gamma * V[s]))
+                    r_ask  = d_ask + (I - 1) * adv - alpha * (I - 1)**2
+                    r_none = -alpha * I**2
+                    q = (p_a     * (r_ask  + gamma * V[s_ask])
+                         + (1 - p_a) * (r_none + gamma * V[s]))
 
-                elif at_lower:                           # only bid active
+                elif at_lower:                           # ask blocked
                     s_bid = params.inventory_to_index(I + 1)
-                    q = (p     * (delta - alpha * (I + 1)**2 + gamma * V[s_bid])
-                         + (1 - p) * (      - alpha * I**2      + gamma * V[s]))
+                    r_bid  = d_bid - (I + 1) * adv - alpha * (I + 1)**2
+                    r_none = -alpha * I**2
+                    q = (p_b     * (r_bid  + gamma * V[s_bid])
+                         + (1 - p_b) * (r_none + gamma * V[s]))
 
                 else:                                    # both sides active
                     s_bid = params.inventory_to_index(I + 1)
                     s_ask = params.inventory_to_index(I - 1)
-                    q = (p**2       * (2*delta - alpha * I**2       + gamma * V[s])
-                         + p*(1-p)  * (delta   - alpha * (I-1)**2   + gamma * V[s_ask])
-                         + (1-p)*p  * (delta   - alpha * (I+1)**2   + gamma * V[s_bid])
-                         + (1-p)**2 * (        - alpha * I**2       + gamma * V[s]))
+
+                    r_both = d_bid + d_ask - alpha * I**2
+                    r_bid  = d_bid - (I + 1) * adv - alpha * (I + 1)**2
+                    r_ask  = d_ask + (I - 1) * adv - alpha * (I - 1)**2
+                    r_none = -alpha * I**2
+
+                    q = (p_b * p_a         * (r_both + gamma * V[s])
+                         + p_b * (1 - p_a) * (r_bid  + gamma * V[s_bid])
+                         + (1 - p_b) * p_a * (r_ask  + gamma * V[s_ask])
+                         + (1 - p_b) * (1 - p_a) * (r_none + gamma * V[s]))
 
                 if q > best_q:
                     best_q, best_a = q, a
@@ -107,7 +120,7 @@ def simulate_dp_policy(
     params: MarketParams,
     n_episodes: int = 1000,
 ):
-    """Roll out the DP policy in any MarketMakingEnv (ignores volatility)."""
+    """Roll out the DP policy in any MarketMakingEnv."""
     episode_rewards = []
     episode_pnls = []
     final_inventories = []

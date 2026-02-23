@@ -4,13 +4,17 @@ Shared by Phase 2 (constant vol) and Phase 3 (OU vol).
 
 Step logic
 ----------
-1. Agent picks action index  →  half-spread  δ.
-2. Bid/ask fill indicators are drawn from independent Bernoulli(p(δ)).
-   - Fills are blocked when they would breach ±I_max.
+1. Agent picks action index → (δ_bid, δ_ask) asymmetric half-spreads.
+2. Bid/ask fill indicators are drawn from independent Bernoulli
+   probabilities derived from Poisson arrival intensities, one per side.
+   Fills are blocked when they would breach ±I_max.
 3. Cash and inventory are updated from fills.
 4. (Phase 3 only) Volatility evolves via a discretised OU process.
-5. Mid-price moves:  Δp = σ_t · ε,   ε ~ N(0,1).
-6. Reward = spread P&L  +  inventory × Δp  −  α · I_new²
+5. Mid-price moves with adverse selection:
+      Δp = adverse · (ask_filled − bid_filled)  +  σ_t · ε,   ε ~ N(0,1)
+   An ask fill signals informed buying (price tends up);
+   a bid fill signals informed selling (price tends down).
+6. Reward = spread P&L  +  inventory × Δp  −  α · I²
    (terminal step also subtracts  terminal_penalty · |I|).
 """
 
@@ -39,7 +43,7 @@ class MarketMakingEnv:
 
         self.pnl_history: list[float] = []
         self.inventory_history: list[int] = []
-        self.spread_history: list[float] = []
+        self.spread_history: list[tuple] = []
 
     # ── gym interface ────────────────────────────────────────────────
 
@@ -56,31 +60,35 @@ class MarketMakingEnv:
 
     def step(self, action_idx: int):
         p = self.params
-        delta = p.spread_options[action_idx]
-        self.spread_history.append(delta)
+        delta_bid, delta_ask = p.action_to_spreads(action_idx)
+        self.spread_history.append((delta_bid, delta_ask))
 
-        # ── fills ────────────────────────────────────────────────────
-        fill_prob = p.fill_probability(delta)
-        bid_fill = (self.inventory < p.max_inventory) and (self.rng.random() < fill_prob)
-        ask_fill = (self.inventory > -p.max_inventory) and (self.rng.random() < fill_prob)
+        # ── order flow (Poisson-derived, independent per side) ───────
+        p_bid = p.fill_probability(delta_bid)
+        p_ask = p.fill_probability(delta_ask)
+
+        bid_fill = (self.inventory < p.max_inventory) and (self.rng.random() < p_bid)
+        ask_fill = (self.inventory > -p.max_inventory) and (self.rng.random() < p_ask)
 
         spread_pnl = 0.0
-        if bid_fill:                       # someone sells to us
-            self.cash -= (self.mid_price - delta)
+        if bid_fill:                       # someone sells to us (hits our bid)
+            self.cash -= (self.mid_price - delta_bid)
             self.inventory += 1
-            spread_pnl += delta
-        if ask_fill:                       # someone buys from us
-            self.cash += (self.mid_price + delta)
+            spread_pnl += delta_bid
+        if ask_fill:                       # someone buys from us (lifts our ask)
+            self.cash += (self.mid_price + delta_ask)
             self.inventory -= 1
-            spread_pnl += delta
+            spread_pnl += delta_ask
 
-        # ── price dynamics ───────────────────────────────────────────
+        # ── volatility dynamics (Phase 3) ────────────────────────────
         if self.use_vol:
             dv = (p.vol_mean_reversion * (p.vol_long_run_mean - self.volatility)
                   + p.vol_of_vol * self.rng.randn())
             self.volatility = max(0.1, self.volatility + dv)
 
-        dp = self.volatility * self.rng.randn()
+        # ── price move with adverse selection ────────────────────────
+        adverse = p.adverse_selection * (int(ask_fill) - int(bid_fill))
+        dp = adverse + self.volatility * self.rng.randn()
         self.mid_price += dp
 
         # ── reward ───────────────────────────────────────────────────

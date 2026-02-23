@@ -10,8 +10,8 @@ Pipeline
 
 Outputs
 -------
-  results/phase3_comparison.png      training curve, reward dists, policies
-  results/phase3_policy_heatmap.png  spread choice over (I, σ) grid
+  results/phase3_comparison.png       training curve, reward dists, skew, inv
+  results/phase3_policy_heatmap.png   bid & ask spread over (I, σ) grid
 """
 
 import os
@@ -117,23 +117,28 @@ def main():
     axes[0, 1].set_title("Reward Distribution: DP vs DQN")
     axes[0, 1].legend()
 
-    # learned policy vs DP for several volatility levels
+    # learned policy skew vs DP for several volatility levels
     vol_levels = [0.5, 0.75, 1.0, 1.25, 1.5]
     inv_norm = np.linspace(-1.0, 1.0, 11)
     for vol in vol_levels:
-        acts = []
+        skews = []
         for ni in inv_norm:
             obs = np.array([ni, vol / params.vol_long_run_mean], dtype=np.float32)
-            acts.append(params.spread_options[agent.select_action(obs)])
-        axes[1, 0].plot(inv_norm * params.max_inventory, acts,
+            a = agent.select_action(obs)
+            db, da = params.action_to_spreads(a)
+            skews.append(db - da)
+        axes[1, 0].plot(inv_norm * params.max_inventory, skews,
                         "-o", ms=4, label=f"σ = {vol:.2f}")
-    dp_sp = [params.spread_options[policy_dp[i]]
-             for i in range(params.n_inventory_states)]
-    axes[1, 0].plot(params.inventory_states, dp_sp,
+    dp_skew = []
+    for i in range(params.n_inventory_states):
+        db, da = params.action_to_spreads(policy_dp[i])
+        dp_skew.append(db - da)
+    axes[1, 0].plot(params.inventory_states, dp_skew,
                     "k--s", ms=5, lw=2, label="DP (no σ)")
+    axes[1, 0].axhline(0, color="gray", ls=":", lw=0.8)
     axes[1, 0].set_xlabel("Inventory")
-    axes[1, 0].set_ylabel("Half-spread  δ")
-    axes[1, 0].set_title("Learned Policy: DQN vs DP")
+    axes[1, 0].set_ylabel("Skew  (δ_bid − δ_ask)")
+    axes[1, 0].set_title("Learned Skew: DQN vs DP")
     axes[1, 0].legend(fontsize=8)
     axes[1, 0].grid(True, alpha=0.3)
 
@@ -152,27 +157,38 @@ def main():
     plt.savefig("results/phase3_comparison.png", dpi=150)
     print("\n→ saved results/phase3_comparison.png")
 
-    # ── policy heatmap ───────────────────────────────────────────────
-    fig2, ax = plt.subplots(figsize=(8, 6))
+    # ── policy heatmaps (bid and ask) ────────────────────────────────
+    fig2, (ax_bid, ax_ask) = plt.subplots(1, 2, figsize=(14, 6))
     inv_grid = np.linspace(-1.0, 1.0, 21)
     vol_grid = np.linspace(0.3, 2.0, 21)
-    policy_map = np.zeros((len(vol_grid), len(inv_grid)))
+    bid_map = np.zeros((len(vol_grid), len(inv_grid)))
+    ask_map = np.zeros((len(vol_grid), len(inv_grid)))
     for i, v in enumerate(vol_grid):
         for j, ni in enumerate(inv_grid):
             obs = np.array([ni, v / params.vol_long_run_mean], dtype=np.float32)
-            policy_map[i, j] = params.spread_options[agent.select_action(obs)]
+            a = agent.select_action(obs)
+            db, da = params.action_to_spreads(a)
+            bid_map[i, j] = db
+            ask_map[i, j] = da
 
-    im = ax.imshow(
-        policy_map, aspect="auto", origin="lower",
-        extent=[inv_grid[0] * params.max_inventory,
-                inv_grid[-1] * params.max_inventory,
-                vol_grid[0], vol_grid[-1]],
-        cmap="viridis",
-    )
-    ax.set_xlabel("Inventory")
-    ax.set_ylabel("Volatility  σ")
-    ax.set_title("DQN Policy Heatmap: Optimal Half-Spread  δ*")
-    plt.colorbar(im, ax=ax, label="δ*")
+    extent = [inv_grid[0] * params.max_inventory,
+              inv_grid[-1] * params.max_inventory,
+              vol_grid[0], vol_grid[-1]]
+
+    im1 = ax_bid.imshow(bid_map, aspect="auto", origin="lower",
+                        extent=extent, cmap="viridis")
+    ax_bid.set_xlabel("Inventory")
+    ax_bid.set_ylabel("Volatility  σ")
+    ax_bid.set_title("DQN Policy: Bid Half-Spread  δ*_bid")
+    plt.colorbar(im1, ax=ax_bid, label="δ*_bid")
+
+    im2 = ax_ask.imshow(ask_map, aspect="auto", origin="lower",
+                        extent=extent, cmap="viridis")
+    ax_ask.set_xlabel("Inventory")
+    ax_ask.set_ylabel("Volatility  σ")
+    ax_ask.set_title("DQN Policy: Ask Half-Spread  δ*_ask")
+    plt.colorbar(im2, ax=ax_ask, label="δ*_ask")
+
     plt.tight_layout()
     plt.savefig("results/phase3_policy_heatmap.png", dpi=150)
     print("→ saved results/phase3_policy_heatmap.png")
