@@ -62,7 +62,7 @@ def value_iteration(
                 at_upper = I >= I_max
                 at_lower = I <= -I_max
 
-                if at_upper and at_lower:
+                if at_upper and at_lower:               # both sides blocked (this never happens)
                     q = -alpha * I**2 + gamma * V[s]
 
                 elif at_upper:                           # bid blocked
@@ -93,7 +93,7 @@ def value_iteration(
                          + (1 - p_b) * p_a * (r_ask  + gamma * V[s_ask])
                          + (1 - p_b) * (1 - p_a) * (r_none + gamma * V[s]))
 
-                if q > best_q:
+                if q >= best_q:
                     best_q, best_a = q, a
 
             V_new[s] = best_q
