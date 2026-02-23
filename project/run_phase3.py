@@ -10,8 +10,9 @@ Pipeline
 
 Outputs
 -------
-  results/phase3_comparison.png       training curve, reward dists, skew, inv
-  results/phase3_policy_heatmap.png   bid & ask spread over (I, σ) grid
+  results/phase3_comparison.png           training curve, reward dists, skew, inv
+  results/phase3_policy_heatmap.png       bid & ask spread over (I, σ) grid
+  results/phase3_strategy_performance.png Sharpe, cumulative PnL, rolling Sharpe, drawdown
 """
 
 import os
@@ -195,6 +196,73 @@ def main():
     plt.tight_layout()
     plt.savefig("results/phase3_policy_heatmap.png", dpi=150)
     print("→ saved results/phase3_policy_heatmap.png")
+
+    # ── strategy performance: Sharpe, cumulative PnL, rolling Sharpe, drawdown ─
+    fig3, axes3 = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 1) Bar chart: Sharpe, mean reward, mean PnL (DP vs DQN)
+    metrics = ["Sharpe", "Mean Reward", "Mean PnL"]
+    dp_vals = [dp_stats["sharpe"], dp_stats["mean_reward"], dp_stats["mean_pnl"]]
+    rl_vals = [rl_stats["sharpe"], rl_stats["mean_reward"], rl_stats["mean_pnl"]]
+    x = np.arange(len(metrics))
+    w = 0.35
+    axes3[0, 0].bar(x - w / 2, dp_vals, w, label="DP", color="C0", edgecolor="k")
+    axes3[0, 0].bar(x + w / 2, rl_vals, w, label="DQN", color="C1", edgecolor="k")
+    axes3[0, 0].set_xticks(x)
+    axes3[0, 0].set_xticklabels(metrics)
+    axes3[0, 0].set_ylabel("Value")
+    axes3[0, 0].set_title("Strategy Metrics: DP vs DQN")
+    axes3[0, 0].legend()
+    axes3[0, 0].grid(True, alpha=0.3, axis="y")
+
+    # 2) Cumulative PnL over evaluation episodes
+    n_ep = len(dp_stats["episode_pnls"])
+    cum_dp = np.cumsum(dp_stats["episode_pnls"])
+    cum_rl = np.cumsum(rl_stats["episode_pnls"])
+    axes3[0, 1].plot(np.arange(1, n_ep + 1), cum_dp, label="DP", color="C0", lw=1)
+    axes3[0, 1].plot(np.arange(1, n_ep + 1), cum_rl, label="DQN", color="C1", lw=1)
+    axes3[0, 1].set_xlabel("Evaluation Episode")
+    axes3[0, 1].set_ylabel("Cumulative MtM PnL")
+    axes3[0, 1].set_title("Cumulative PnL (Evaluation)")
+    axes3[0, 1].legend()
+    axes3[0, 1].grid(True, alpha=0.3)
+
+    # 3) Rolling Sharpe (window = 50 episodes)
+    roll_win = 50
+    def rolling_sharpe(r, window):
+        n = len(r)
+        out = np.full(n, np.nan)
+        for i in range(window, n + 1):
+            chunk = r[i - window : i]
+            out[i - 1] = np.mean(chunk) / (np.std(chunk) + 1e-8)
+        return out
+    roll_dp = rolling_sharpe(dp_stats["episode_rewards"], roll_win)
+    roll_rl = rolling_sharpe(rl_stats["episode_rewards"], roll_win)
+    axes3[1, 0].plot(np.arange(n_ep), roll_dp, label="DP", color="C0", lw=0.8)
+    axes3[1, 0].plot(np.arange(n_ep), roll_rl, label="DQN", color="C1", lw=0.8)
+    axes3[1, 0].set_xlabel("Evaluation Episode")
+    axes3[1, 0].set_ylabel("Rolling Sharpe")
+    axes3[1, 0].set_title(f"Rolling Sharpe (window = {roll_win} episodes)")
+    axes3[1, 0].legend()
+    axes3[1, 0].grid(True, alpha=0.3)
+
+    # 4) Drawdown from cumulative PnL (positive = distance below running peak)
+    def drawdown(cum_pnl):
+        peak = np.maximum.accumulate(cum_pnl)
+        return peak - cum_pnl
+    dd_dp = drawdown(cum_dp)
+    dd_rl = drawdown(cum_rl)
+    axes3[1, 1].fill_between(np.arange(1, n_ep + 1), 0, dd_dp, color="C0", alpha=0.5, label="DP")
+    axes3[1, 1].fill_between(np.arange(1, n_ep + 1), 0, dd_rl, color="C1", alpha=0.5, label="DQN")
+    axes3[1, 1].set_xlabel("Evaluation Episode")
+    axes3[1, 1].set_ylabel("Drawdown")
+    axes3[1, 1].set_title("Drawdown (from Cumulative PnL)")
+    axes3[1, 1].legend()
+    axes3[1, 1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("results/phase3_strategy_performance.png", dpi=150)
+    print("→ saved results/phase3_strategy_performance.png")
 
     plt.show()
 
