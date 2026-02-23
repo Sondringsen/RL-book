@@ -55,7 +55,7 @@ def main():
     V_dp, policy_dp, _ = value_iteration(params, verbose=False)
     print("  DP converged.")
 
-    # ── Step 2: train DQN ────────────────────────────────────────────
+    # ── Step 2: train DQN (Double DQN, Huber loss, soft targets, step ε-decay) ─
     print("\n[2/4] Training DQN (state = [inventory, volatility]) …")
     train_env = MarketMakingEnv(params, use_volatility_dynamics=True, seed=42)
 
@@ -65,8 +65,10 @@ def main():
         lr=5e-4,
         gamma=params.discount,
         batch_size=64,
-        target_update_freq=200,
         hidden_dim=128,
+        learning_starts=10_000,
+        tau=0.005,
+        clip_reward=False,
         seed=42,
     )
 
@@ -75,7 +77,8 @@ def main():
         n_episodes=3000,
         epsilon_start=1.0,
         epsilon_end=0.02,
-        epsilon_decay_episodes=2000,
+        epsilon_decay_steps=400_000,
+        verbose=True,
     )
 
     # ── Step 3: evaluate both ────────────────────────────────────────

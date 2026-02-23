@@ -1,7 +1,8 @@
 """Phase 3: Deep Q-Network agent for market making.
 
 Architecture: simple MLP  →  Q(s, ·) for each discrete spread action.
-Training uses experience replay + periodic target-network sync.
+Training: Double DQN, Huber loss, soft target updates, step-based ε-decay,
+optional reward clipping. Experience replay with learning_starts delay.
 """
 
 import random
@@ -59,9 +60,17 @@ class DQNAgent:
         gamma: float = 0.99,
         buffer_size: int = 50_000,
         batch_size: int = 64,
-        target_update_freq: int = 200,
         hidden_dim: int = 64,
         seed: int = None,
+        # --- Double DQN + loss: no new args (Huber in code) ---
+        # --- learning_starts: no gradient updates until total_steps > this ---
+        learning_starts: int = 10_000,
+        # --- soft target updates (Polyak) ---
+        tau: float = 0.005,
+        # --- optional reward clipping ---
+        clip_reward: bool = False,
+        # kept for API compatibility; ignored when using step-based decay
+        target_update_freq: int = 200,
     ):
         if seed is not None:
             torch.manual_seed(seed)
@@ -70,7 +79,9 @@ class DQNAgent:
         self.n_actions = n_actions
         self.gamma = gamma
         self.batch_size = batch_size
-        self.target_update_freq = target_update_freq
+        self.learning_starts = learning_starts  # [CHANGE] no updates until total_steps > this
+        self.tau = tau                          # [CHANGE] soft target update (Polyak)
+        self.clip_reward = clip_reward          # [CHANGE] clip rewards to [-1, 1] when True
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -80,7 +91,8 @@ class DQNAgent:
 
         self.optimiser = optim.Adam(self.q_net.parameters(), lr=lr)
         self.buffer = ReplayBuffer(buffer_size)
-        self.train_steps = 0
+        self.train_steps = 0   # number of gradient steps taken
+        self.total_steps = 0   # [CHANGE] total environment steps (for learning_starts + ε decay)
 
     # ── action selection ─────────────────────────────────────────────
 
@@ -91,10 +103,13 @@ class DQNAgent:
             s = torch.FloatTensor(state).unsqueeze(0).to(self.device)
             return int(self.q_net(s).argmax(dim=1).item())
 
-    # ── one gradient step ────────────────────────────────────────────
+    # ── one gradient step (Double DQN, Huber, soft target, learning_starts) ─
 
     def _update(self):
         if len(self.buffer) < self.batch_size:
+            return None
+        # [CHANGE] No gradient updates until total env steps exceed learning_starts
+        if self.total_steps < self.learning_starts:
             return None
 
         states, actions, rewards, next_states, dones = self.buffer.sample(
@@ -108,11 +123,16 @@ class DQNAgent:
 
         q_vals = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
+        # [CHANGE] Double DQN: online net selects action, target net evaluates it
         with torch.no_grad():
-            next_q = self.target_net(next_states).max(dim=1)[0]
+            next_actions = self.q_net(next_states).argmax(dim=1)
+            next_q = self.target_net(next_states).gather(
+                1, next_actions.unsqueeze(1)
+            ).squeeze(1)
             targets = rewards + self.gamma * next_q * (1 - dones)
 
-        loss = nn.MSELoss()(q_vals, targets)
+        # [CHANGE] Huber loss (Smooth L1) instead of MSE
+        loss = nn.SmoothL1Loss()(q_vals, targets)
 
         self.optimiser.zero_grad()
         loss.backward()
@@ -120,12 +140,18 @@ class DQNAgent:
         self.optimiser.step()
 
         self.train_steps += 1
-        if self.train_steps % self.target_update_freq == 0:
-            self.target_net.load_state_dict(self.q_net.state_dict())
+
+        # [CHANGE] Soft target update (Polyak) every step instead of hard sync
+        for target_param, param in zip(
+            self.target_net.parameters(), self.q_net.parameters()
+        ):
+            target_param.data.copy_(
+                self.tau * param.data + (1.0 - self.tau) * target_param.data
+            )
 
         return loss.item()
 
-    # ── full training loop ───────────────────────────────────────────
+    # ── full training loop (step-based ε decay, optional reward clipping) ───
 
     def train(
         self,
@@ -134,26 +160,35 @@ class DQNAgent:
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.02,
         epsilon_decay_episodes: int = 2000,
+        epsilon_decay_steps: int = None,
         verbose: bool = True,
     ):
+        # [CHANGE] Step-based epsilon decay: default decay over 400k steps if not set
+        if epsilon_decay_steps is None:
+            epsilon_decay_steps = 400_000
         episode_rewards: list[float] = []
         losses: list[float] = []
 
         for ep in range(n_episodes):
-            frac = min(1.0, ep / max(epsilon_decay_episodes, 1))
-            epsilon = epsilon_start + frac * (epsilon_end - epsilon_start)
-
             obs = env.reset()
             total_reward = 0.0
             done = False
 
             while not done:
+                # [CHANGE] Epsilon from total_steps (linear decay over epsilon_decay_steps)
+                decay_frac = min(1.0, self.total_steps / max(epsilon_decay_steps, 1))
+                epsilon = epsilon_end + (1.0 - decay_frac) * (epsilon_start - epsilon_end)
+
                 action = self.select_action(obs, epsilon)
                 next_obs, reward, done, _ = env.step(action)
+                # [CHANGE] Optional reward clipping to [-1, 1]
+                if self.clip_reward:
+                    reward = float(np.clip(reward, -1.0, 1.0))
                 self.buffer.push(obs, action, reward, next_obs, done)
                 obs = next_obs
                 total_reward += reward
 
+                self.total_steps += 1
                 loss = self._update()
                 if loss is not None:
                     losses.append(loss)
@@ -165,12 +200,12 @@ class DQNAgent:
                 print(
                     f"  ep {ep+1:>5d}/{n_episodes}  "
                     f"reward(last 500)={np.mean(recent):+.2f}  "
-                    f"ε={epsilon:.3f}"
+                    f"ε={epsilon:.3f}  steps={self.total_steps}"
                 )
 
         return episode_rewards, losses
 
-    # ── evaluation ───────────────────────────────────────────────────
+    # ── evaluation (unchanged signature and behaviour) ──────────────────────
 
     def evaluate(self, env, n_episodes: int = 1000):
         episode_rewards: list[float] = []
