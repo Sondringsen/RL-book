@@ -3,11 +3,14 @@
 
 Outputs
 -------
-  results/phase2_dp_analysis.png   value fn, policy, convergence, skew sensitivity
-  results/phase2_simulation.png    reward & inventory histograms from rollouts
+  results/phase2_dp_analysis.png          value fn, policy, convergence, skew sensitivity
+  results/phase2_simulation.png           reward & inventory histograms from rollouts
+  results/phase2_arrival_sensitivity.png  bid/ask spread vs arrival rate
+  results/phase2_curse_of_dim.png         DP solve time vs state/action space size
 """
 
 import os
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -157,6 +160,93 @@ def main():
     plt.tight_layout()
     plt.savefig("results/phase2_arrival_sensitivity.png", dpi=150)
     print("→ saved results/phase2_arrival_sensitivity.png")
+
+    # ── curse of dimensionality ───────────────────────────────────────
+    print("\nCurse of dimensionality experiment …")
+
+    # Sweep 1: fix I_max=5, grow number of spread options
+    spread_counts = [3, 5, 7, 10, 13, 16, 20, 25, 30]
+    times_spread = []
+    n_actions_list = []
+    for n_sp in spread_counts:
+        sp = tuple(np.linspace(0.5, 2.5, n_sp).round(2))
+        p = MarketParams(spread_options=sp, max_inventory=5)
+        t0 = time.perf_counter()
+        value_iteration(p, verbose=False)
+        elapsed = time.perf_counter() - t0
+        times_spread.append(elapsed)
+        n_actions_list.append(p.n_actions)
+        print(f"  n_spread={n_sp:>2d}  actions={p.n_actions:>4d}  "
+              f"states={p.n_inventory_states:>3d}  time={elapsed:.4f}s")
+
+    # Sweep 2: fix n_spread=5, grow max inventory
+    inv_maxes = [3, 5, 10, 15, 20, 30, 40, 50]
+    times_inv = []
+    n_states_list = []
+    for im in inv_maxes:
+        p = MarketParams(max_inventory=im)
+        t0 = time.perf_counter()
+        value_iteration(p, verbose=False)
+        elapsed = time.perf_counter() - t0
+        times_inv.append(elapsed)
+        n_states_list.append(p.n_inventory_states)
+        print(f"  I_max={im:>2d}  actions={p.n_actions:>4d}  "
+              f"states={p.n_inventory_states:>3d}  time={elapsed:.4f}s")
+
+    # Sweep 3: grow both simultaneously
+    configs = [
+        (3,  3),
+        (5,  5),
+        (7,  7),
+        (10, 10),
+        (13, 15),
+        (16, 20),
+        (20, 30),
+        (25, 40),
+        (30, 50),
+    ]
+    times_both = []
+    total_sa_list = []
+    for n_sp, im in configs:
+        sp = tuple(np.linspace(0.5, 2.5, n_sp).round(2))
+        p = MarketParams(spread_options=sp, max_inventory=im)
+        t0 = time.perf_counter()
+        value_iteration(p, verbose=False)
+        elapsed = time.perf_counter() - t0
+        times_both.append(elapsed)
+        total_sa = p.n_inventory_states * p.n_actions
+        total_sa_list.append(total_sa)
+        print(f"  n_spread={n_sp:>2d}  I_max={im:>2d}  "
+              f"|S|×|A|={total_sa:>6d}  time={elapsed:.4f}s")
+
+    fig4, axes4 = plt.subplots(1, 3, figsize=(18, 5))
+
+    axes4[0].plot(n_actions_list, times_spread, "o-", color="C0", lw=1.5, ms=6)
+    axes4[0].set_xlabel("|A|  (number of actions = n_spread²)")
+    axes4[0].set_ylabel("Solve time (s)")
+    axes4[0].set_title("DP Time vs Action Space\n(I_max = 5 fixed)")
+    axes4[0].grid(True, alpha=0.3)
+
+    axes4[1].plot(n_states_list, times_inv, "s-", color="C1", lw=1.5, ms=6)
+    axes4[1].set_xlabel("|S|  (number of states = 2·I_max + 1)")
+    axes4[1].set_ylabel("Solve time (s)")
+    axes4[1].set_title("DP Time vs State Space\n(n_spread = 5 fixed)")
+    axes4[1].grid(True, alpha=0.3)
+
+    axes4[2].plot(total_sa_list, times_both, "D-", color="C2", lw=1.5, ms=6)
+    axes4[2].set_xlabel("|S| × |A|")
+    axes4[2].set_ylabel("Solve time (s)")
+    axes4[2].set_title("DP Time vs |S| × |A|\n(both growing)")
+    axes4[2].grid(True, alpha=0.3)
+
+    for ax in axes4:
+        ax.set_yscale("log")
+        ax.set_xscale("log")
+
+    fig4.suptitle("Curse of Dimensionality: Value Iteration Solve Time", fontsize=14, y=1.02)
+    plt.tight_layout()
+    plt.savefig("results/phase2_curse_of_dim.png", dpi=150, bbox_inches="tight")
+    print("→ saved results/phase2_curse_of_dim.png")
 
     plt.show()
 
