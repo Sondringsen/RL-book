@@ -13,6 +13,7 @@ Outputs
   results/phase3_comparison.png           training curve, reward dists, skew, inv
   results/phase3_policy_heatmap.png       bid & ask spread over (I, σ) grid
   results/phase3_strategy_performance.png Sharpe, cumulative PnL, rolling Sharpe, drawdown
+  results/phase3_trajectory.png           mid price with bid/ask quotes (DP vs DQN)
 """
 
 import os
@@ -21,6 +22,35 @@ import matplotlib.pyplot as plt
 
 from market_making import MarketParams, MarketMakingEnv, DQNAgent
 from market_making.dp_solver import value_iteration, simulate_dp_policy
+
+
+def simulate_on_fixed_path(prices, fill_randoms, vol_path, policy_fn, params):
+    """Simulate an agent's quoting on a pre-generated price path.
+
+    Returns arrays of bid/ask half-spreads chosen at each step.
+    policy_fn(inventory, volatility) -> action_idx
+    """
+    n_steps = len(prices) - 1
+    inventory = 0
+    bid_spreads = np.zeros(n_steps)
+    ask_spreads = np.zeros(n_steps)
+
+    for t in range(n_steps):
+        action = policy_fn(inventory, vol_path[t])
+        db, da = params.action_to_spreads(action)
+        bid_spreads[t] = db
+        ask_spreads[t] = da
+
+        p_bid = params.fill_probability(db)
+        p_ask = params.fill_probability(da)
+        bid_fill = (inventory < params.max_inventory) and (fill_randoms[t, 0] < p_bid)
+        ask_fill = (inventory > -params.max_inventory) and (fill_randoms[t, 1] < p_ask)
+        if bid_fill:
+            inventory += 1
+        if ask_fill:
+            inventory -= 1
+
+    return bid_spreads, ask_spreads
 
 
 def print_table(dp_stats: dict, rl_stats: dict):
@@ -263,6 +293,66 @@ def main():
     plt.tight_layout()
     plt.savefig("results/phase3_strategy_performance.png", dpi=150)
     print("→ saved results/phase3_strategy_performance.png")
+
+    # ── trajectory plot: same price path, DP vs DQN quotes ───────────
+    rng = np.random.RandomState(999)
+    n_steps = params.episode_length
+
+    vol_path = np.zeros(n_steps)
+    vol_path[0] = params.sigma_base
+    for t in range(1, n_steps):
+        dv = (params.vol_mean_reversion * (params.vol_long_run_mean - vol_path[t - 1])
+              + params.vol_of_vol * rng.randn())
+        vol_path[t] = max(0.1, vol_path[t - 1] + dv)
+
+    prices = np.zeros(n_steps + 1)
+    prices[0] = params.initial_price
+    for t in range(n_steps):
+        prices[t + 1] = prices[t] + vol_path[t] * rng.randn()
+
+    fill_randoms = rng.random((n_steps, 2))
+
+    def dp_policy_fn(inventory, _vol):
+        return int(policy_dp[params.inventory_to_index(inventory)])
+
+    def dqn_policy_fn(inventory, vol):
+        obs = np.array([inventory / params.max_inventory,
+                        vol / params.vol_long_run_mean], dtype=np.float32)
+        return agent.select_action(obs, epsilon=0.0)
+
+    bid_dp, ask_dp = simulate_on_fixed_path(
+        prices, fill_randoms, vol_path, dp_policy_fn, params)
+    bid_dqn, ask_dqn = simulate_on_fixed_path(
+        prices, fill_randoms, vol_path, dqn_policy_fn, params)
+
+    mid = prices[:n_steps]
+    steps = np.arange(n_steps)
+
+    fig4, (ax_dp, ax_dqn) = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+
+    ax_dp.plot(steps, mid, color="k", lw=1.2, label="Mid price")
+    ax_dp.plot(steps, mid - bid_dp, color="C0", lw=0.9, alpha=0.85, label="Bid")
+    ax_dp.plot(steps, mid + ask_dp, color="C3", lw=0.9, alpha=0.85, label="Ask")
+    ax_dp.fill_between(steps, mid - bid_dp, mid + ask_dp, color="gray", alpha=0.12)
+    ax_dp.set_xlabel("Time step")
+    ax_dp.set_ylabel("Price")
+    ax_dp.set_title("DP Agent")
+    ax_dp.legend(loc="upper right", fontsize=9)
+    ax_dp.grid(True, alpha=0.3)
+
+    ax_dqn.plot(steps, mid, color="k", lw=1.2, label="Mid price")
+    ax_dqn.plot(steps, mid - bid_dqn, color="C0", lw=0.9, alpha=0.85, label="Bid")
+    ax_dqn.plot(steps, mid + ask_dqn, color="C3", lw=0.9, alpha=0.85, label="Ask")
+    ax_dqn.fill_between(steps, mid - bid_dqn, mid + ask_dqn, color="gray", alpha=0.12)
+    ax_dqn.set_xlabel("Time step")
+    ax_dqn.set_title("DQN Agent")
+    ax_dqn.legend(loc="upper right", fontsize=9)
+    ax_dqn.grid(True, alpha=0.3)
+
+    fig4.suptitle("Mid Price with Bid/Ask Quotes", fontsize=14, y=1.01)
+    plt.tight_layout()
+    plt.savefig("results/phase3_trajectory.png", dpi=150, bbox_inches="tight")
+    print("→ saved results/phase3_trajectory.png")
 
     plt.show()
 
