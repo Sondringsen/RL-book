@@ -205,9 +205,11 @@ class DQNAgent:
 
         return episode_rewards, losses
 
-    # ── evaluation (unchanged signature and behaviour) ──────────────────────
+    # ── evaluation ────────────────────────────────────────────────────────
 
-    def evaluate(self, env, n_episodes: int = 1000):
+    def evaluate(self, env, n_episodes: int = 1000, episode_seed_base: int = None):
+        """Evaluate policy. If episode_seed_base is set, each episode i uses
+        seed=episode_seed_base+i for identical trajectories (paired with DP)."""
         episode_rewards: list[float] = []
         episode_pnls: list[float] = []
         final_inventories: list[int] = []
@@ -215,8 +217,11 @@ class DQNAgent:
         all_actions: list[int] = []
         all_vols: list[float] = []
 
-        for _ in range(n_episodes):
-            obs = env.reset()
+        for i in range(n_episodes):
+            if episode_seed_base is not None:
+                obs = env.reset(seed=episode_seed_base + i)
+            else:
+                obs = env.reset()
             total_reward = 0.0
             done = False
 

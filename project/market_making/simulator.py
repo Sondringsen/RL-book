@@ -32,11 +32,21 @@ class MarketMakingEnv:
         include_price: bool = False,
         price_scale: float = 10.0,
         seed: int = None,
+        # Align RL state space with DP for closer policy match
+        discrete_inventory: bool = False,
+        price_grid: np.ndarray = None,
+        vol_grid: np.ndarray = None,
+        # Randomize initial (I, price, vol) for uniform state coverage during training
+        random_init: bool = False,
     ):
         self.params = params
         self.use_vol = use_volatility_dynamics
         self.include_price = include_price
         self.price_scale = price_scale
+        self.discrete_inventory = discrete_inventory
+        self.price_grid = np.asarray(price_grid) if price_grid is not None else None
+        self.vol_grid = np.asarray(vol_grid) if vol_grid is not None else None
+        self.random_init = random_init
         self.rng = np.random.RandomState(seed)
 
         self.mid_price: float = params.initial_price
@@ -51,14 +61,46 @@ class MarketMakingEnv:
 
     # ── gym interface ────────────────────────────────────────────────
 
-    def reset(self) -> np.ndarray:
-        self.mid_price = self.params.initial_price
-        self.inventory = 0
-        self.cash = 0.0
-        self.volatility = self.params.sigma_base
+    def reset(
+        self,
+        seed: int = None,
+        inventory: int = None,
+        price_dev: float = None,
+        vol: float = None,
+    ) -> np.ndarray:
+        """Reset to initial state. If seed is provided, reset RNG for reproducible trajectories.
+        If random_init=True was set at construction, (I, price_dev, vol) are sampled from the grid.
+        Otherwise, optional inventory/price_dev/vol override defaults (0, 0, sigma_base)."""
+        if seed is not None:
+            self.rng = np.random.RandomState(seed)
+
+        if self.random_init and self.price_grid is not None:
+            # Sample uniformly from state grid for full coverage during training
+            inv_idx = self.rng.randint(0, self.params.n_inventory_states)
+            self.inventory = self.params.index_to_inventory(inv_idx)
+            price_idx = self.rng.randint(0, len(self.price_grid))
+            self.mid_price = self.params.initial_price + self.price_grid[price_idx]
+            if self.vol_grid is not None:
+                vol_idx = self.rng.randint(0, len(self.vol_grid))
+                self.volatility = self.vol_grid[vol_idx]
+            else:
+                self.volatility = self.params.sigma_base
+        elif inventory is not None or price_dev is not None or vol is not None:
+            self.inventory = inventory if inventory is not None else 0
+            self.mid_price = (
+                self.params.initial_price + (price_dev if price_dev is not None else 0.0)
+            )
+            self.volatility = vol if vol is not None else self.params.sigma_base
+        else:
+            self.mid_price = self.params.initial_price
+            self.inventory = 0
+            self.volatility = self.params.sigma_base
+
+        # Cash = -inventory * mid_price so initial MtM = 0 (consistent with DP)
+        self.cash = -self.inventory * self.mid_price
         self.step_count = 0
         self.pnl_history = [0.0]
-        self.inventory_history = [0]
+        self.inventory_history = [self.inventory]
         self.spread_history = []
         return self._get_obs()
 
@@ -121,21 +163,67 @@ class MarketMakingEnv:
     # ── helpers ──────────────────────────────────────────────────────
 
     def _get_obs(self) -> np.ndarray:
-        norm_inv = self.inventory / self.params.max_inventory
-        obs = [norm_inv]
+        if self.discrete_inventory:
+            inv_onehot = np.zeros(self.params.n_inventory_states, dtype=np.float32)
+            inv_onehot[self.params.inventory_to_index(self.inventory)] = 1.0
+            parts = [inv_onehot]
+        else:
+            parts = [np.array([self.inventory / self.params.max_inventory], dtype=np.float32)]
+
         if self.include_price:
-            obs.append((self.mid_price - self.params.initial_price) / self.price_scale)
+            if self.price_grid is not None:
+                price_dev = self.mid_price - self.params.initial_price
+                idx = int(np.clip(np.argmin(np.abs(self.price_grid - price_dev)), 0, len(self.price_grid) - 1))
+                ph = np.zeros(len(self.price_grid), dtype=np.float32)
+                ph[idx] = 1.0
+                parts.append(ph)
+            else:
+                parts.append(np.array([(self.mid_price - self.params.initial_price) / self.price_scale], dtype=np.float32))
         if self.use_vol:
-            obs.append(self.volatility / self.params.vol_long_run_mean)
-        return np.array(obs, dtype=np.float32)
+            if self.vol_grid is not None:
+                idx = int(np.clip(np.argmin(np.abs(self.vol_grid - self.volatility)), 0, len(self.vol_grid) - 1))
+                vh = np.zeros(len(self.vol_grid), dtype=np.float32)
+                vh[idx] = 1.0
+                parts.append(vh)
+            else:
+                parts.append(np.array([self.volatility / self.params.vol_long_run_mean], dtype=np.float32))
+        return np.concatenate(parts)
+
+    def obs_for_state(self, inventory: int, price_dev: float = 0.0, vol: float = None) -> np.ndarray:
+        """Build observation for a given (I, price_dev, vol) — for policy plotting."""
+        if self.discrete_inventory:
+            inv_onehot = np.zeros(self.params.n_inventory_states, dtype=np.float32)
+            inv_onehot[self.params.inventory_to_index(inventory)] = 1.0
+            parts = [inv_onehot]
+        else:
+            parts = [np.array([inventory / self.params.max_inventory], dtype=np.float32)]
+
+        if self.include_price:
+            if self.price_grid is not None:
+                idx = int(np.clip(np.argmin(np.abs(self.price_grid - price_dev)), 0, len(self.price_grid) - 1))
+                ph = np.zeros(len(self.price_grid), dtype=np.float32)
+                ph[idx] = 1.0
+                parts.append(ph)
+            else:
+                parts.append(np.array([price_dev / self.price_scale], dtype=np.float32))
+        if self.use_vol:
+            v = vol if vol is not None else self.params.vol_long_run_mean
+            if self.vol_grid is not None:
+                idx = int(np.clip(np.argmin(np.abs(self.vol_grid - v)), 0, len(self.vol_grid) - 1))
+                vh = np.zeros(len(self.vol_grid), dtype=np.float32)
+                vh[idx] = 1.0
+                parts.append(vh)
+            else:
+                parts.append(np.array([v / self.params.vol_long_run_mean], dtype=np.float32))
+        return np.concatenate(parts)
 
     @property
     def state_dim(self) -> int:
-        dim = 1
+        dim = self.params.n_inventory_states if self.discrete_inventory else 1
         if self.include_price:
-            dim += 1
+            dim += len(self.price_grid) if self.price_grid is not None else 1
         if self.use_vol:
-            dim += 1
+            dim += len(self.vol_grid) if self.vol_grid is not None else 1
         return dim
 
     @property

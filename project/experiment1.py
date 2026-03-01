@@ -17,6 +17,7 @@ from market_making.dp_solver import value_iteration, simulate_dp_policy
 
 SPREAD_OPTIONS = (0.5, 1.0, 1.5)
 SEED = 42
+EVAL_SEED = 123  # Same seed for DP/RL evaluation → identical trajectories
 
 
 def main():
@@ -35,74 +36,91 @@ def main():
     print("\n[1/4] DP value iteration …")
     V_dp, policy_dp, residuals = value_iteration(params)
 
-    # ── RL ────────────────────────────────────────────────────────────
-    print("\n[2/4] Training DQN (state = [inventory]) …")
-    train_env = MarketMakingEnv(params, use_volatility_dynamics=False, seed=SEED)
+    # ── RL (discrete inventory + more training → align with DP) ────────
+    print("\n[2/4] Training DQN (state = one-hot inventory, aligned with DP) …")
+    train_env = MarketMakingEnv(
+        params, use_volatility_dynamics=False,
+        discrete_inventory=True, seed=SEED,
+    )
 
     agent = DQNAgent(
         state_dim=train_env.state_dim,
         n_actions=train_env.n_actions,
-        lr=5e-4,
+        lr=2e-4,
         gamma=params.discount,
         batch_size=64,
-        hidden_dim=64,
-        learning_starts=5_000,
+        hidden_dim=128,
+        learning_starts=10_000,
         tau=0.005,
         seed=SEED,
     )
     ep_rewards, _ = agent.train(
-        train_env, n_episodes=3000,
+        train_env, n_episodes=8000,
         epsilon_start=1.0, epsilon_end=0.02,
-        epsilon_decay_steps=200_000, verbose=True,
+        epsilon_decay_steps=500_000, verbose=True,
     )
 
-    # ── evaluate ──────────────────────────────────────────────────────
-    print("\n[3/4] Evaluating (1 000 episodes, constant σ) …")
-    eval_dp = MarketMakingEnv(params, use_volatility_dynamics=False, seed=123)
-    dp_stats = simulate_dp_policy(eval_dp, policy_dp, params, n_episodes=1000)
-
-    eval_rl = MarketMakingEnv(params, use_volatility_dynamics=False, seed=123)
-    rl_stats = agent.evaluate(eval_rl, n_episodes=1000)
+    # ── evaluate (same env config + per-episode seeds → identical trajectories) ─
+    print("\n[3/4] Evaluating (1 000 episodes, constant σ, paired trajectories) …")
+    eval_env = MarketMakingEnv(
+        params, use_volatility_dynamics=False,
+        discrete_inventory=True, seed=EVAL_SEED,
+    )
+    dp_stats = simulate_dp_policy(
+        eval_env, policy_dp, params, n_episodes=1000, episode_seed_base=EVAL_SEED
+    )
+    eval_env = MarketMakingEnv(
+        params, use_volatility_dynamics=False,
+        discrete_inventory=True, seed=EVAL_SEED,
+    )
+    rl_stats = agent.evaluate(eval_env, n_episodes=1000, episode_seed_base=EVAL_SEED)
 
     _print_table(dp_stats, rl_stats)
 
     # ── plots ─────────────────────────────────────────────────────────
     print("\n[4/4] Plotting …")
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
-    # (0,0) Optimal policy: bid & ask spreads
+    # (0,0) Optimal policy: bids only (DP vs RL)
     dp_bids = [params.action_to_spreads(policy_dp[i])[0] for i in range(params.n_inventory_states)]
     dp_asks = [params.action_to_spreads(policy_dp[i])[1] for i in range(params.n_inventory_states)]
     rl_bids, rl_asks = [], []
     for I in inventories:
-        obs = np.array([I / params.max_inventory], dtype=np.float32)
+        obs = eval_env.obs_for_state(I)
         a = agent.select_action(obs)
         db, da = params.action_to_spreads(a)
         rl_bids.append(db)
         rl_asks.append(da)
 
     axes[0, 0].step(inventories, dp_bids, "b-o", where="mid", ms=5, label="DP bid")
-    axes[0, 0].step(inventories, dp_asks, "b-s", where="mid", ms=5, label="DP ask", ls="--")
-    axes[0, 0].step(inventories, rl_bids, "r-o", where="mid", ms=5, label="RL bid")
-    axes[0, 0].step(inventories, rl_asks, "r-s", where="mid", ms=5, label="RL ask", ls="--")
+    axes[0, 0].step(inventories, rl_bids, "r-s", where="mid", ms=5, label="RL bid", ls="--")
     axes[0, 0].set_xlabel("Inventory")
     axes[0, 0].set_ylabel("Half-spread")
-    axes[0, 0].set_title("Optimal Policy: Bid & Ask Spreads")
+    axes[0, 0].set_title("Optimal Policy: Bid Spreads")
     axes[0, 0].legend(fontsize=8)
     axes[0, 0].grid(True, alpha=0.3)
 
-    # (0,1) Reward distribution
+    # (0,1) Optimal policy: asks only (DP vs RL)
+    axes[0, 1].step(inventories, dp_asks, "b-o", where="mid", ms=5, label="DP ask")
+    axes[0, 1].step(inventories, rl_asks, "r-s", where="mid", ms=5, label="RL ask", ls="--")
+    axes[0, 1].set_xlabel("Inventory")
+    axes[0, 1].set_ylabel("Half-spread")
+    axes[0, 1].set_title("Optimal Policy: Ask Spreads")
+    axes[0, 1].legend(fontsize=8)
+    axes[0, 1].grid(True, alpha=0.3)
+
+    # (0,2) Reward distribution
     lo = min(dp_stats["episode_rewards"].min(), rl_stats["episode_rewards"].min())
     hi = max(dp_stats["episode_rewards"].max(), rl_stats["episode_rewards"].max())
     bins = np.linspace(lo, hi, 50)
-    axes[0, 1].hist(dp_stats["episode_rewards"], bins=bins, alpha=0.5, label="DP", edgecolor="k")
-    axes[0, 1].hist(rl_stats["episode_rewards"], bins=bins, alpha=0.5, label="RL", edgecolor="k")
-    axes[0, 1].axvline(dp_stats["mean_reward"], color="C0", ls="--")
-    axes[0, 1].axvline(rl_stats["mean_reward"], color="C1", ls="--")
-    axes[0, 1].set_xlabel("Episode Reward")
-    axes[0, 1].set_ylabel("Frequency")
-    axes[0, 1].set_title("Reward Distribution")
-    axes[0, 1].legend()
+    axes[0, 2].hist(dp_stats["episode_rewards"], bins=bins, alpha=0.5, label="DP", edgecolor="k")
+    axes[0, 2].hist(rl_stats["episode_rewards"], bins=bins, alpha=0.5, label="RL", edgecolor="k")
+    axes[0, 2].axvline(dp_stats["mean_reward"], color="C0", ls="--")
+    axes[0, 2].axvline(rl_stats["mean_reward"], color="C1", ls="--")
+    axes[0, 2].set_xlabel("Episode Reward")
+    axes[0, 2].set_ylabel("Frequency")
+    axes[0, 2].set_title("Reward Distribution")
+    axes[0, 2].legend()
 
     # (1,0) Cumulative PnL
     n_ep = len(dp_stats["episode_pnls"])
@@ -126,6 +144,9 @@ def main():
     axes[1, 1].set_ylabel("Frequency")
     axes[1, 1].set_title("Final Inventory Distribution")
     axes[1, 1].legend()
+
+    # Hide unused (1,2)
+    axes[1, 2].set_visible(False)
 
     fig.suptitle("Experiment 1: Inventory-Only State (DP vs RL)", fontsize=14, y=1.01)
     plt.tight_layout()

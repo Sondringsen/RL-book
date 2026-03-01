@@ -136,15 +136,20 @@ def simulate_dp_policy(
     policy: np.ndarray,
     params: MarketParams,
     n_episodes: int = 1000,
+    episode_seed_base: int = None,
 ):
-    """Roll out the DP policy in any MarketMakingEnv."""
+    """Roll out the DP policy in any MarketMakingEnv.
+    If episode_seed_base is set, each episode i uses seed=episode_seed_base+i for identical trajectories."""
     episode_rewards = []
     episode_pnls = []
     final_inventories = []
     all_inventories: list[int] = []
 
-    for _ in range(n_episodes):
-        env.reset()
+    for i in range(n_episodes):
+        if episode_seed_base is not None:
+            env.reset(seed=episode_seed_base + i)
+        else:
+            env.reset()
         total_reward = 0.0
         done = False
         while not done:
@@ -284,12 +289,16 @@ def value_iteration_2d(
     return V, policy, residuals, price_grid
 
 
-def simulate_dp_policy_2d(env, policy, params, price_grid, n_episodes=1000):
+def simulate_dp_policy_2d(env, policy, params, price_grid, n_episodes=1000, episode_seed_base=None):
+    """If episode_seed_base is set, each episode i uses seed=episode_seed_base+i for identical trajectories."""
     episode_rewards, episode_pnls, final_inventories = [], [], []
     all_inventories: list[int] = []
 
-    for _ in range(n_episodes):
-        env.reset()
+    for i in range(n_episodes):
+        if episode_seed_base is not None:
+            env.reset(seed=episode_seed_base + i)
+        else:
+            env.reset()
         total_reward = 0.0
         done = False
         while not done:
@@ -423,12 +432,16 @@ def value_iteration_3d(
     return V, policy, residuals, price_grid, vol_grid
 
 
-def simulate_dp_policy_3d(env, policy, params, price_grid, vol_grid, n_episodes=1000):
+def simulate_dp_policy_3d(env, policy, params, price_grid, vol_grid, n_episodes=1000, episode_seed_base=None):
+    """If episode_seed_base is set, each episode i uses seed=episode_seed_base+i for identical trajectories."""
     episode_rewards, episode_pnls, final_inventories = [], [], []
     all_inventories: list[int] = []
 
-    for _ in range(n_episodes):
-        env.reset()
+    for i in range(n_episodes):
+        if episode_seed_base is not None:
+            env.reset(seed=episode_seed_base + i)
+        else:
+            env.reset()
         total_reward = 0.0
         done = False
         while not done:

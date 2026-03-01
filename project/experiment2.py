@@ -20,6 +20,7 @@ N_PRICE_BINS = 21
 PRICE_HALF_RANGE = 10.0
 PRICE_SCALE = PRICE_HALF_RANGE
 SEED = 42
+EVAL_SEED = 123  # Same seed for DP/RL → identical trajectories, same problem
 
 
 def main():
@@ -41,43 +42,50 @@ def main():
         params, n_price_bins=N_PRICE_BINS, price_half_range=PRICE_HALF_RANGE,
     )
 
-    # ── RL ────────────────────────────────────────────────────────────
-    print("\n[2/4] Training DQN (state = [inventory, price]) …")
+    # ── RL (discrete inv+price + random init for full state coverage) ───
+    print("\n[2/4] Training DQN (state = one-hot inv+price, random init for full coverage) …")
     train_env = MarketMakingEnv(
         params, use_volatility_dynamics=False,
-        include_price=True, price_scale=PRICE_SCALE, seed=SEED,
+        include_price=True, price_scale=PRICE_SCALE,
+        discrete_inventory=True, price_grid=price_grid,
+        random_init=True,  # Start from random (I, price) → visit all 231 states
+        seed=SEED,
     )
 
     agent = DQNAgent(
         state_dim=train_env.state_dim,
         n_actions=train_env.n_actions,
-        lr=5e-4,
+        lr=2e-4,
         gamma=params.discount,
         batch_size=64,
-        hidden_dim=128,
-        learning_starts=5_000,
+        hidden_dim=256,
+        learning_starts=15_000,
         tau=0.005,
         seed=SEED,
     )
     ep_rewards, _ = agent.train(
-        train_env, n_episodes=4000,
+        train_env, n_episodes=15_000,
         epsilon_start=1.0, epsilon_end=0.02,
-        epsilon_decay_steps=300_000, verbose=True,
+        epsilon_decay_steps=800_000, verbose=True,
     )
 
-    # ── evaluate ──────────────────────────────────────────────────────
-    print("\n[3/4] Evaluating (1 000 episodes, constant σ) …")
-    eval_dp = MarketMakingEnv(
+    # ── evaluate (same env config + per-episode seeds → identical trajectories) ─
+    print("\n[3/4] Evaluating (1 000 episodes, constant σ, paired trajectories) …")
+    eval_env = MarketMakingEnv(
         params, use_volatility_dynamics=False,
-        include_price=True, price_scale=PRICE_SCALE, seed=123,
+        include_price=True, price_scale=PRICE_SCALE,
+        discrete_inventory=True, price_grid=price_grid, seed=EVAL_SEED,
     )
-    dp_stats = simulate_dp_policy_2d(eval_dp, policy_dp, params, price_grid, n_episodes=1000)
-
-    eval_rl = MarketMakingEnv(
+    dp_stats = simulate_dp_policy_2d(
+        eval_env, policy_dp, params, price_grid,
+        n_episodes=1000, episode_seed_base=EVAL_SEED,
+    )
+    eval_env = MarketMakingEnv(
         params, use_volatility_dynamics=False,
-        include_price=True, price_scale=PRICE_SCALE, seed=123,
+        include_price=True, price_scale=PRICE_SCALE,
+        discrete_inventory=True, price_grid=price_grid, seed=EVAL_SEED,
     )
-    rl_stats = agent.evaluate(eval_rl, n_episodes=1000)
+    rl_stats = agent.evaluate(eval_env, n_episodes=1000, episode_seed_base=EVAL_SEED)
 
     _print_table(dp_stats, rl_stats)
 
@@ -93,7 +101,7 @@ def main():
                for i in range(params.n_inventory_states)]
     rl_bids, rl_asks = [], []
     for I in inventories:
-        obs = np.array([I / params.max_inventory, 0.0], dtype=np.float32)
+        obs = eval_env.obs_for_state(I, price_dev=0.0)
         a = agent.select_action(obs)
         db, da = params.action_to_spreads(a)
         rl_bids.append(db)
@@ -174,8 +182,12 @@ def main():
     rl_bid_map = np.zeros_like(dp_bid_map)
     rl_ask_map = np.zeros_like(dp_bid_map)
     for i, pn in enumerate(price_norm):
+        price_dev = pn * PRICE_HALF_RANGE
         for j, ni in enumerate(inv_norm):
-            obs = np.array([ni, pn], dtype=np.float32)
+            inv = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory),
+                      0, params.n_inventory_states - 1))
+            inv = params.index_to_inventory(inv)
+            obs = eval_env.obs_for_state(inv, price_dev=price_dev)
             a = agent.select_action(obs)
             db, da = params.action_to_spreads(a)
             rl_bid_map[i, j] = db
