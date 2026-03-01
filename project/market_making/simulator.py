@@ -29,10 +29,14 @@ class MarketMakingEnv:
         self,
         params: MarketParams,
         use_volatility_dynamics: bool = False,
+        include_price: bool = False,
+        price_scale: float = 10.0,
         seed: int = None,
     ):
         self.params = params
         self.use_vol = use_volatility_dynamics
+        self.include_price = include_price
+        self.price_scale = price_scale
         self.rng = np.random.RandomState(seed)
 
         self.mid_price: float = params.initial_price
@@ -118,14 +122,21 @@ class MarketMakingEnv:
 
     def _get_obs(self) -> np.ndarray:
         norm_inv = self.inventory / self.params.max_inventory
+        obs = [norm_inv]
+        if self.include_price:
+            obs.append((self.mid_price - self.params.initial_price) / self.price_scale)
         if self.use_vol:
-            norm_vol = self.volatility / self.params.vol_long_run_mean
-            return np.array([norm_inv, norm_vol], dtype=np.float32)
-        return np.array([norm_inv], dtype=np.float32)
+            obs.append(self.volatility / self.params.vol_long_run_mean)
+        return np.array(obs, dtype=np.float32)
 
     @property
     def state_dim(self) -> int:
-        return 2 if self.use_vol else 1
+        dim = 1
+        if self.include_price:
+            dim += 1
+        if self.use_vol:
+            dim += 1
+        return dim
 
     @property
     def n_actions(self) -> int:
