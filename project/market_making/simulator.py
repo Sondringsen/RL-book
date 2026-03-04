@@ -74,12 +74,13 @@ class MarketMakingEnv:
         if seed is not None:
             self.rng = np.random.RandomState(seed)
 
-        if self.random_init and self.price_grid is not None:
-            # Sample uniformly from state grid for full coverage during training
+        if self.random_init:
+            # Always randomize inventory for full state coverage during training
             inv_idx = self.rng.randint(0, self.params.n_inventory_states)
             self.inventory = self.params.index_to_inventory(inv_idx)
-            price_idx = self.rng.randint(0, len(self.price_grid))
-            self.mid_price = self.params.initial_price + self.price_grid[price_idx]
+            if self.price_grid is not None:
+                price_idx = self.rng.randint(0, len(self.price_grid))
+                self.mid_price = self.params.initial_price + self.price_grid[price_idx]
             if self.vol_grid is not None:
                 vol_idx = self.rng.randint(0, len(self.vol_grid))
                 self.volatility = self.vol_grid[vol_idx]

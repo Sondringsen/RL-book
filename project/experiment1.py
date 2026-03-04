@@ -22,7 +22,11 @@ EVAL_SEED = 123  # Same seed for DP/RL evaluation → identical trajectories
 
 def main():
     os.makedirs("results", exist_ok=True)
-    params = MarketParams(spread_options=SPREAD_OPTIONS)
+    params = MarketParams(
+        spread_options=SPREAD_OPTIONS,
+        terminal_penalty=0.0,
+        sigma_base=0.0,   # DP ignores sigma entirely; setting it to 0 removes the I*σ*ε noise
+    )                     # that swamps the spread signal (SNR ≈ 0.5 at σ=1)
     inventories = params.inventory_states
 
     print("=" * 60)
@@ -37,17 +41,29 @@ def main():
     V_dp, policy_dp, residuals = value_iteration(params)
 
     # ── RL (discrete inventory + more training → align with DP) ────────
+    # Use longer episodes for training only: with episode_length=200 and γ=0.99,
+    # done=True truncates 13.4% of future value (γ^200=0.134), systematically
+    # underestimating Q-values at states visited near step 200 (i.e. the most
+    # frequently visited states near I=0). Longer episodes (γ^1000≈0) eliminate
+    # this bias. Evaluation still uses the original 200-step episodes.
+    train_params = MarketParams(
+        spread_options=SPREAD_OPTIONS,
+        terminal_penalty=0.0,
+        sigma_base=0.0,
+        episode_length=1000,  # γ^1000 ≈ 0 → no terminal truncation bias
+    )
     print("\n[2/4] Training DQN (state = one-hot inventory, aligned with DP) …")
     train_env = MarketMakingEnv(
-        params, use_volatility_dynamics=False,
+        train_params, use_volatility_dynamics=False,
         discrete_inventory=True, seed=SEED,
+        random_init=True,  # randomize starting inventory so all states are visited
     )
 
     agent = DQNAgent(
         state_dim=train_env.state_dim,
         n_actions=train_env.n_actions,
         lr=2e-4,
-        gamma=params.discount,
+        gamma=train_params.discount,
         batch_size=64,
         hidden_dim=128,
         learning_starts=10_000,
@@ -55,9 +71,12 @@ def main():
         seed=SEED,
     )
     ep_rewards, _ = agent.train(
-        train_env, n_episodes=8000,
-        epsilon_start=1.0, epsilon_end=0.02,
-        epsilon_decay_steps=500_000, verbose=True,
+        train_env, 
+        n_episodes=800,  # 1600 × 1000 = 1.6M steps (same budget as before)
+        epsilon_start=1.0, 
+        epsilon_end=0.02,
+        epsilon_decay_steps=500_000, 
+        verbose=True,
     )
 
     # ── evaluate (same env config + per-episode seeds → identical trajectories) ─
