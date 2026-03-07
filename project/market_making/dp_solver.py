@@ -268,7 +268,7 @@ def value_iteration_2d(
                          + (1 - pb) * pa * Q_ask
                          + (1 - pb) * (1 - pa) * Q_no)
 
-                better = Q > best_Q
+                better = Q >= best_Q
                 best_Q = np.where(better, Q, best_Q)
                 best_A = np.where(better, a, best_A)
 
@@ -411,7 +411,7 @@ def value_iteration_3d(
                              + (1 - pb) * pa * _q(sa, adv, da - alpha * Ia**2, Ia)
                              + (1 - pb) * (1 - pa) * _q(si, 0.0, -alpha * I**2, I))
 
-                    better = Q > best_Q
+                    better = Q >= best_Q
                     best_Q = np.where(better, Q, best_Q)
                     best_A = np.where(better, a, best_A)
 

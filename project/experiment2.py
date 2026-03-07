@@ -43,9 +43,19 @@ def main():
     )
 
     # ── RL (discrete inv+price + random init for full state coverage) ───
+    # train_params: terminal_penalty=0.0 to match the DP (infinite-horizon, no terminal cost)
+    # episode_length=1000 so γ^1000 ≈ 0 → eliminates terminal truncation bias
+    # (γ^200 = 0.134 with the default episode_length=200 systematically underestimates Q-values)
+    # Note: sigma_base is kept at default (1.0) unlike exp 1, because sigma IS part of the 2D DP problem.
+    train_params = MarketParams(
+        spread_options=SPREAD_OPTIONS,
+        terminal_penalty=0.0,
+        sigma_base=0.0,       # remove I·σ·ε noise that swamps spread signal (SNR ≈ 0.5 at σ=1)
+        episode_length=1000,  # γ^1000 ≈ 0 → no terminal truncation bias
+    )
     print("\n[2/4] Training DQN (state = one-hot inv+price, random init for full coverage) …")
     train_env = MarketMakingEnv(
-        params, use_volatility_dynamics=False,
+        train_params, use_volatility_dynamics=False,
         include_price=True, price_scale=PRICE_SCALE,
         discrete_inventory=True, price_grid=price_grid,
         random_init=True,  # Start from random (I, price) → visit all 231 states
@@ -56,7 +66,7 @@ def main():
         state_dim=train_env.state_dim,
         n_actions=train_env.n_actions,
         lr=2e-4,
-        gamma=params.discount,
+        gamma=train_params.discount,
         batch_size=64,
         hidden_dim=256,
         learning_starts=15_000,
@@ -64,9 +74,12 @@ def main():
         seed=SEED,
     )
     ep_rewards, _ = agent.train(
-        train_env, n_episodes=15_000,
-        epsilon_start=1.0, epsilon_end=0.02,
-        epsilon_decay_steps=800_000, verbose=True,
+        train_env,
+        n_episodes=3_000,  # 3 000 × 1 000 = 3M steps (same budget as before)
+        epsilon_start=1.0,
+        epsilon_end=0.02,
+        epsilon_decay_steps=800_000,
+        verbose=True,
     )
 
     # ── evaluate (same env config + per-episode seeds → identical trajectories) ─
@@ -91,9 +104,9 @@ def main():
 
     # ── plots ─────────────────────────────────────────────────────────
     print("\n[4/4] Plotting …")
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
-    # (0,0) Policy at mid-price = 0 (centre of grid)
+    # shared policy data at price = mid (centre of grid)
     mid_idx = N_PRICE_BINS // 2
     dp_bids = [params.action_to_spreads(policy_dp[i, mid_idx])[0]
                for i in range(params.n_inventory_states)]
@@ -102,33 +115,42 @@ def main():
     rl_bids, rl_asks = [], []
     for I in inventories:
         obs = eval_env.obs_for_state(I, price_dev=0.0)
-        a = agent.select_action(obs)
+        mask = DQNAgent.boundary_mask(I, params)
+        a = agent.select_action(obs, valid_mask=mask)
         db, da = params.action_to_spreads(a)
         rl_bids.append(db)
         rl_asks.append(da)
 
-    axes[0, 0].step(inventories, dp_bids, "b-o", where="mid", ms=5, label="DP bid")
-    axes[0, 0].step(inventories, dp_asks, "b-s", where="mid", ms=5, label="DP ask", ls="--")
-    axes[0, 0].step(inventories, rl_bids, "r-o", where="mid", ms=5, label="RL bid")
-    axes[0, 0].step(inventories, rl_asks, "r-s", where="mid", ms=5, label="RL ask", ls="--")
+    # (0,0) Bid spreads at mid-price
+    axes[0, 0].step(inventories, dp_bids, "b-o", where="mid", ms=5, label="DP")
+    axes[0, 0].step(inventories, rl_bids, "r-s", where="mid", ms=5, label="RL", ls="--")
     axes[0, 0].set_xlabel("Inventory")
-    axes[0, 0].set_ylabel("Half-spread")
-    axes[0, 0].set_title("Optimal Policy at Price = Mid (DP vs RL)")
+    axes[0, 0].set_ylabel("Bid half-spread")
+    axes[0, 0].set_title("Optimal Policy: Bid Spreads (Price = Mid)")
     axes[0, 0].legend(fontsize=8)
     axes[0, 0].grid(True, alpha=0.3)
 
-    # (0,1) Reward distribution
+    # (0,1) Ask spreads at mid-price
+    axes[0, 1].step(inventories, dp_asks, "b-o", where="mid", ms=5, label="DP")
+    axes[0, 1].step(inventories, rl_asks, "r-s", where="mid", ms=5, label="RL", ls="--")
+    axes[0, 1].set_xlabel("Inventory")
+    axes[0, 1].set_ylabel("Ask half-spread")
+    axes[0, 1].set_title("Optimal Policy: Ask Spreads (Price = Mid)")
+    axes[0, 1].legend(fontsize=8)
+    axes[0, 1].grid(True, alpha=0.3)
+
+    # (0,2) Reward distribution
     lo = min(dp_stats["episode_rewards"].min(), rl_stats["episode_rewards"].min())
     hi = max(dp_stats["episode_rewards"].max(), rl_stats["episode_rewards"].max())
     bins = np.linspace(lo, hi, 50)
-    axes[0, 1].hist(dp_stats["episode_rewards"], bins=bins, alpha=0.5, label="DP", edgecolor="k")
-    axes[0, 1].hist(rl_stats["episode_rewards"], bins=bins, alpha=0.5, label="RL", edgecolor="k")
-    axes[0, 1].axvline(dp_stats["mean_reward"], color="C0", ls="--")
-    axes[0, 1].axvline(rl_stats["mean_reward"], color="C1", ls="--")
-    axes[0, 1].set_xlabel("Episode Reward")
-    axes[0, 1].set_ylabel("Frequency")
-    axes[0, 1].set_title("Reward Distribution")
-    axes[0, 1].legend()
+    axes[0, 2].hist(dp_stats["episode_rewards"], bins=bins, alpha=0.5, label="DP", edgecolor="k")
+    axes[0, 2].hist(rl_stats["episode_rewards"], bins=bins, alpha=0.5, label="RL", edgecolor="k")
+    axes[0, 2].axvline(dp_stats["mean_reward"], color="C0", ls="--")
+    axes[0, 2].axvline(rl_stats["mean_reward"], color="C1", ls="--")
+    axes[0, 2].set_xlabel("Episode Reward")
+    axes[0, 2].set_ylabel("Frequency")
+    axes[0, 2].set_title("Reward Distribution")
+    axes[0, 2].legend()
 
     # (1,0) Cumulative PnL
     n_ep = len(dp_stats["episode_pnls"])
@@ -152,6 +174,9 @@ def main():
     axes[1, 1].set_ylabel("Frequency")
     axes[1, 1].set_title("Final Inventory Distribution")
     axes[1, 1].legend()
+
+    # (1,2) unused
+    axes[1, 2].set_visible(False)
 
     fig.suptitle("Experiment 2: (Inventory, Price) State — DP vs RL",
                  fontsize=14, y=1.01)
@@ -188,7 +213,8 @@ def main():
                       0, params.n_inventory_states - 1))
             inv = params.index_to_inventory(inv)
             obs = eval_env.obs_for_state(inv, price_dev=price_dev)
-            a = agent.select_action(obs)
+            mask = DQNAgent.boundary_mask(inv, params)
+            a = agent.select_action(obs, valid_mask=mask)
             db, da = params.action_to_spreads(a)
             rl_bid_map[i, j] = db
             rl_ask_map[i, j] = da

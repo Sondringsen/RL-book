@@ -96,12 +96,56 @@ class DQNAgent:
 
     # ── action selection ─────────────────────────────────────────────
 
-    def select_action(self, state: np.ndarray, epsilon: float = 0.0) -> int:
+    def select_action(
+        self,
+        state: np.ndarray,
+        epsilon: float = 0.0,
+        valid_mask: np.ndarray = None,
+    ) -> int:
+        """Select action with optional boolean mask (True = valid action).
+
+        At inventory boundaries the environment blocks one fill side regardless
+        of the spread chosen, so Q-values for that side become indistinguishable.
+        Passing a valid_mask forces the agent to pick from the correct spread
+        region instead of defaulting to the lowest-index (tightest) spread.
+        """
         if random.random() < epsilon:
+            if valid_mask is not None:
+                valid_actions = np.where(valid_mask)[0]
+                return int(valid_actions[random.randrange(len(valid_actions))])
             return random.randrange(self.n_actions)
         with torch.no_grad():
             s = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            return int(self.q_net(s).argmax(dim=1).item())
+            q_vals = self.q_net(s)
+            if valid_mask is not None:
+                invalid = torch.tensor(~valid_mask, dtype=torch.bool, device=self.device)
+                q_vals = q_vals.masked_fill(invalid.unsqueeze(0), float("-inf"))
+            return int(q_vals.argmax(dim=1).item())
+
+    @staticmethod
+    def boundary_mask(inventory: int, params) -> np.ndarray:
+        """Boolean mask of valid actions given current inventory boundary.
+
+        At I == +I_max: bid fills are always blocked → force the widest bid
+        spread (highest bid_idx) so the agent signals "don't buy".
+        At I == -I_max: ask fills are always blocked → force the widest ask
+        spread (highest ask_idx) so the agent signals "don't sell".
+        Otherwise all actions are valid.
+        """
+        n = params.n_spread_options
+        n_actions = n * n
+        mask = np.ones(n_actions, dtype=bool)
+        if inventory >= params.max_inventory:
+            # only allow actions with bid_idx == n-1 (widest bid spread)
+            for a in range(n_actions):
+                if a // n != n - 1:
+                    mask[a] = False
+        elif inventory <= -params.max_inventory:
+            # only allow actions with ask_idx == n-1 (widest ask spread)
+            for a in range(n_actions):
+                if a % n != n - 1:
+                    mask[a] = False
+        return mask
 
     # ── one gradient step (Double DQN, Huber, soft target, learning_starts) ─
 
@@ -162,6 +206,7 @@ class DQNAgent:
         epsilon_decay_episodes: int = 2000,
         epsilon_decay_steps: int = None,
         verbose: bool = True,
+        use_boundary_mask: bool = True,
     ):
         # [CHANGE] Step-based epsilon decay: default decay over 400k steps if not set
         if epsilon_decay_steps is None:
@@ -179,7 +224,12 @@ class DQNAgent:
                 decay_frac = min(1.0, self.total_steps / max(epsilon_decay_steps, 1))
                 epsilon = epsilon_end + (1.0 - decay_frac) * (epsilon_start - epsilon_end)
 
-                action = self.select_action(obs, epsilon)
+                mask = (
+                    self.boundary_mask(env.inventory, env.params)
+                    if use_boundary_mask
+                    else None
+                )
+                action = self.select_action(obs, epsilon, valid_mask=mask)
                 next_obs, reward, done, _ = env.step(action)
                 # [CHANGE] Optional reward clipping to [-1, 1]
                 if self.clip_reward:
@@ -226,7 +276,8 @@ class DQNAgent:
             done = False
 
             while not done:
-                action = self.select_action(obs, epsilon=0.0)
+                mask = self.boundary_mask(env.inventory, env.params)
+                action = self.select_action(obs, epsilon=0.0, valid_mask=mask)
                 all_actions.append(action)
                 all_inventories.append(env.inventory)
                 if env.use_vol:
