@@ -71,10 +71,13 @@ class DQNAgent:
         clip_reward: bool = False,
         # kept for API compatibility; ignored when using step-based decay
         target_update_freq: int = 200,
+        use_amp: bool = None,
     ):
         if seed is not None:
             torch.manual_seed(seed)
             random.seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
 
         self.n_actions = n_actions
         self.gamma = gamma
@@ -84,15 +87,23 @@ class DQNAgent:
         self.clip_reward = clip_reward          # [CHANGE] clip rewards to [-1, 1] when True
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.use_amp = (use_amp if use_amp is not None else (self.device.type == "cuda"))
+        if self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True  # faster conv-like ops when input sizes fixed
 
         self.q_net = QNetwork(state_dim, n_actions, hidden_dim).to(self.device)
         self.target_net = QNetwork(state_dim, n_actions, hidden_dim).to(self.device)
         self.target_net.load_state_dict(self.q_net.state_dict())
+        # torch.compile (PyTorch 2+) for faster forward/backward on GPU
+        if hasattr(torch, "compile") and self.device.type == "cuda":
+            self.q_net = torch.compile(self.q_net, mode="reduce-overhead")
+            self.target_net = torch.compile(self.target_net, mode="reduce-overhead")
 
         self.optimiser = optim.Adam(self.q_net.parameters(), lr=lr)
         self.buffer = ReplayBuffer(buffer_size)
         self.train_steps = 0   # number of gradient steps taken
         self.total_steps = 0   # [CHANGE] total environment steps (for learning_starts + ε decay)
+        self._scaler = torch.amp.GradScaler("cuda") if self.use_amp else None
 
     # ── action selection ─────────────────────────────────────────────
 
@@ -115,7 +126,7 @@ class DQNAgent:
                 return int(valid_actions[random.randrange(len(valid_actions))])
             return random.randrange(self.n_actions)
         with torch.no_grad():
-            s = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            s = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
             q_vals = self.q_net(s)
             if valid_mask is not None:
                 invalid = torch.tensor(~valid_mask, dtype=torch.bool, device=self.device)
@@ -159,29 +170,42 @@ class DQNAgent:
         states, actions, rewards, next_states, dones = self.buffer.sample(
             self.batch_size
         )
-        states = torch.FloatTensor(states).to(self.device)
-        actions = torch.LongTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
-        next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device)
+        # Pin memory and non_blocking for faster CPU→GPU transfer
+        kwargs = {"device": self.device, "non_blocking": True} if self.device.type == "cuda" else {"device": self.device}
+        states = torch.as_tensor(states, dtype=torch.float32).to(**kwargs)
+        actions = torch.as_tensor(actions, dtype=torch.int64).to(**kwargs)
+        rewards = torch.as_tensor(rewards, dtype=torch.float32).to(**kwargs)
+        next_states = torch.as_tensor(next_states, dtype=torch.float32).to(**kwargs)
+        dones = torch.as_tensor(dones, dtype=torch.float32).to(**kwargs)
 
-        q_vals = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
-
-        # [CHANGE] Double DQN: online net selects action, target net evaluates it
-        with torch.no_grad():
-            next_actions = self.q_net(next_states).argmax(dim=1)
-            next_q = self.target_net(next_states).gather(
-                1, next_actions.unsqueeze(1)
-            ).squeeze(1)
-            targets = rewards + self.gamma * next_q * (1 - dones)
-
-        # [CHANGE] Huber loss (Smooth L1) instead of MSE
-        loss = nn.SmoothL1Loss()(q_vals, targets)
-
-        self.optimiser.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(self.q_net.parameters(), 10.0)
-        self.optimiser.step()
+        self.optimiser.zero_grad(set_to_none=True)
+        if self.use_amp:
+            with torch.amp.autocast("cuda"):
+                q_vals = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+                with torch.no_grad():
+                    next_actions = self.q_net(next_states).argmax(dim=1)
+                    next_q = self.target_net(next_states).gather(
+                        1, next_actions.unsqueeze(1)
+                    ).squeeze(1)
+                    targets = rewards + self.gamma * next_q * (1 - dones)
+                loss = nn.SmoothL1Loss()(q_vals, targets)
+            self._scaler.scale(loss).backward()
+            self._scaler.unscale_(self.optimiser)
+            nn.utils.clip_grad_norm_(self.q_net.parameters(), 10.0)
+            self._scaler.step(self.optimiser)
+            self._scaler.update()
+        else:
+            q_vals = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+            with torch.no_grad():
+                next_actions = self.q_net(next_states).argmax(dim=1)
+                next_q = self.target_net(next_states).gather(
+                    1, next_actions.unsqueeze(1)
+                ).squeeze(1)
+                targets = rewards + self.gamma * next_q * (1 - dones)
+            loss = nn.SmoothL1Loss()(q_vals, targets)
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.q_net.parameters(), 10.0)
+            self.optimiser.step()
 
         self.train_steps += 1
 

@@ -69,12 +69,20 @@ def main():
         seed=SEED,
     )
 
+    # GPU-friendly defaults: larger batch and buffer for better throughput
+    use_gpu = device.type == "cuda"
+    batch_size = 256 if use_gpu else 64
+    buffer_size = 100_000 if use_gpu else 50_000
+    if use_gpu:
+        print(f"  GPU mode: batch_size={batch_size}, buffer_size={buffer_size}, AMP + cudnn.benchmark")
+
     agent = DQNAgent(
         state_dim=train_env.state_dim,
         n_actions=train_env.n_actions,
         lr=2e-4,
         gamma=train_params.discount,
-        batch_size=64,
+        batch_size=batch_size,
+        buffer_size=buffer_size,
         hidden_dim=256,
         learning_starts=15_000,
         tau=0.005,
