@@ -34,7 +34,7 @@ class MarketParams:
 
     # ── Price dynamics ───────────────────────────────────────────────
     initial_price: float = 100.0
-    sigma_base: float = 1.0
+    sigma_base: float = 0.2
 
     # OU volatility dynamics (Phase 3 only)
     vol_mean_reversion: float = 0.15
