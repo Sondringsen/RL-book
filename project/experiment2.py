@@ -11,7 +11,6 @@ Compares DP (2-D value iteration) vs RL (DQN) side by side.
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import torch
 
 from market_making import MarketParams, MarketMakingEnv, DQNAgent
 from market_making.dp_solver import value_iteration_2d, simulate_dp_policy_2d
@@ -25,12 +24,6 @@ EVAL_SEED = 123  # Same seed for DP/RL → identical trajectories, same problem
 
 
 def main():
-    # Use GPU on Colab when Runtime → Change runtime type → GPU is set
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"PyTorch device: {device}")
-    if device.type == "cuda":
-        print(f"  GPU: {torch.cuda.get_device_name(0)}")
-
     os.makedirs("results", exist_ok=True)
     params = MarketParams(spread_options=SPREAD_OPTIONS)
     inventories = params.inventory_states
