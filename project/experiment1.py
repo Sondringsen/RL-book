@@ -9,6 +9,9 @@ Compares DP (value iteration) vs RL (DQN) side by side.
 """
 
 import os
+import time
+import uuid
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -20,12 +23,25 @@ SEED = 42
 EVAL_SEED = 123  # Same seed for DP/RL evaluation → identical trajectories
 
 
+def _smooth(arr, window=50):
+    """Simple moving average."""
+    arr = np.asarray(arr, dtype=float)
+    if len(arr) < window:
+        return arr
+    return np.convolve(arr, np.ones(window) / window, mode="valid")
+
+
 def main():
+    run_id = uuid.uuid4().hex[:8]
+    plot_dir = os.path.join("plots", run_id)
+    os.makedirs(plot_dir, exist_ok=True)
     os.makedirs("results", exist_ok=True)
+    print(f"  Run ID : {run_id}  →  plots saved to {plot_dir}/")
+
     params = MarketParams(
         spread_options=SPREAD_OPTIONS,
         terminal_penalty=0.0,
-        sigma_base=0.0,   # DP ignores sigma entirely; setting it to 0 removes the I*σ*ε noise
+        # sigma_base=0.2,   # DP ignores sigma entirely; setting it to 0 removes the I*σ*ε noise
     )                     # that swamps the spread signal (SNR ≈ 0.5 at σ=1)
     inventories = params.inventory_states
 
@@ -34,11 +50,25 @@ def main():
     print("=" * 60)
     print(f"  State dim   : 1 (inventory)")
     print(f"  Actions     : {params.n_actions}  spreads={SPREAD_OPTIONS}")
+    print(f"  Inv range   : [{-params.max_inventory}, {params.max_inventory}]")
+    print(f"  Discount γ  : {params.discount}")
+    print(f"  Inv penalty : α = {params.inventory_penalty}")
     print(f"  Volatility  : constant σ = {params.sigma_base}")
 
     # ── DP ────────────────────────────────────────────────────────────
     print("\n[1/4] DP value iteration …")
+    t0 = time.time()
     V_dp, policy_dp, residuals = value_iteration(params)
+    dp_time = time.time() - t0
+
+    dp_policy_bids = [params.action_to_spreads(policy_dp[i])[0]
+                      for i in range(params.n_inventory_states)]
+    dp_policy_asks = [params.action_to_spreads(policy_dp[i])[1]
+                      for i in range(params.n_inventory_states)]
+    print(f"  → converged in {len(residuals)} iters  "
+          f"final residual={residuals[-1]:.2e}  time={dp_time:.1f}s")
+    print(f"  → bid spreads : {dp_policy_bids}")
+    print(f"  → ask spreads : {dp_policy_asks}")
 
     # ── RL (discrete inventory + more training → align with DP) ────────
     # Use longer episodes for training only: with episode_length=200 and γ=0.99,
@@ -70,14 +100,19 @@ def main():
         tau=0.005,
         seed=SEED,
     )
-    ep_rewards, _ = agent.train(
-        train_env, 
-        n_episodes=800,  # 1600 × 1000 = 1.6M steps (same budget as before)
-        epsilon_start=1.0, 
+    t0 = time.time()
+    ep_rewards, train_info = agent.train(
+        train_env,
+        n_episodes=400,
+        epsilon_start=1.0,
         epsilon_end=0.02,
-        epsilon_decay_steps=500_000, 
+        epsilon_decay_steps=100_000,
         verbose=True,
+        log_interval=100,
     )
+    dqn_time = time.time() - t0
+    print(f"  → training done in {dqn_time:.1f}s  "
+          f"({agent.total_steps:,} env steps, {agent.train_steps:,} gradient steps)")
 
     # ── evaluate (same env config + per-episode seeds → identical trajectories) ─
     print("\n[3/4] Evaluating (1 000 episodes, constant σ, paired trajectories) …")
@@ -96,32 +131,89 @@ def main():
 
     _print_table(dp_stats, rl_stats)
 
-    # ── plots ─────────────────────────────────────────────────────────
+    # ── training curves ───────────────────────────────────────────────
     print("\n[4/4] Plotting …")
+    fig_train, axes_t = plt.subplots(2, 2, figsize=(14, 9))
+
+    # (0,0) DP convergence
+    axes_t[0, 0].semilogy(residuals, color="steelblue", lw=1)
+    axes_t[0, 0].set_xlabel("Iteration")
+    axes_t[0, 0].set_ylabel("Max Bellman residual (log scale)")
+    axes_t[0, 0].set_title(f"DP Convergence  ({len(residuals)} iters, {dp_time:.1f}s)")
+    axes_t[0, 0].grid(True, alpha=0.3)
+
+    # (0,1) DQN episode reward over training
+    raw = np.array(ep_rewards)
+    smoothed = _smooth(raw, window=50)
+    xs_raw = np.arange(1, len(raw) + 1)
+    xs_sm = np.arange(50, len(raw) + 1)
+    axes_t[0, 1].plot(xs_raw, raw, color="tomato", alpha=0.25, lw=0.8, label="raw")
+    axes_t[0, 1].plot(xs_sm, smoothed, color="tomato", lw=2, label="MA-50")
+    axes_t[0, 1].axhline(dp_stats["mean_reward"], color="steelblue",
+                         ls="--", lw=1.2, label="DP mean")
+    axes_t[0, 1].set_xlabel("Episode")
+    axes_t[0, 1].set_ylabel("Episode reward")
+    axes_t[0, 1].set_title("DQN Training Reward")
+    axes_t[0, 1].legend(fontsize=8)
+    axes_t[0, 1].grid(True, alpha=0.3)
+
+    # (1,0) DQN loss per gradient step (smoothed)
+    losses = np.array(train_info["losses"])
+    if len(losses) > 0:
+        smoothed_loss = _smooth(losses, window=500)
+        xs_loss = np.arange(500, len(losses) + 1)
+        axes_t[1, 0].plot(np.arange(1, len(losses) + 1), losses,
+                          color="orange", alpha=0.2, lw=0.5)
+        axes_t[1, 0].plot(xs_loss, smoothed_loss, color="orange", lw=2)
+        axes_t[1, 0].set_xlabel("Gradient step")
+        axes_t[1, 0].set_ylabel("Huber loss")
+        axes_t[1, 0].set_title("DQN Training Loss")
+        axes_t[1, 0].grid(True, alpha=0.3)
+
+    # (1,1) Epsilon decay over episodes
+    epsilons = np.array(train_info["episode_epsilons"])
+    axes_t[1, 1].plot(np.arange(1, len(epsilons) + 1), epsilons,
+                      color="purple", lw=1.5)
+    axes_t[1, 1].set_xlabel("Episode")
+    axes_t[1, 1].set_ylabel("ε (exploration rate)")
+    axes_t[1, 1].set_title("Epsilon Decay")
+    axes_t[1, 1].grid(True, alpha=0.3)
+
+    fig_train.suptitle(f"Experiment 1 — Training Curves  (run {run_id})",
+                       fontsize=13, y=1.01)
+    plt.tight_layout()
+    path = os.path.join(plot_dir, "training_curves.png")
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    print(f"  → saved {path}")
+
+    # ── comparison plots ──────────────────────────────────────────────
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
-    # (0,0) Optimal policy: bids only (DP vs RL)
-    dp_bids = [params.action_to_spreads(policy_dp[i])[0] for i in range(params.n_inventory_states)]
-    dp_asks = [params.action_to_spreads(policy_dp[i])[1] for i in range(params.n_inventory_states)]
+    # (0,0) Bid spreads
+    dp_bids = [params.action_to_spreads(policy_dp[i])[0]
+               for i in range(params.n_inventory_states)]
+    dp_asks = [params.action_to_spreads(policy_dp[i])[1]
+               for i in range(params.n_inventory_states)]
     rl_bids, rl_asks = [], []
     for I in inventories:
         obs = eval_env.obs_for_state(I)
-        a = agent.select_action(obs)
+        mask = DQNAgent.boundary_mask(I, params)
+        a = agent.select_action(obs, valid_mask=mask)
         db, da = params.action_to_spreads(a)
         rl_bids.append(db)
         rl_asks.append(da)
 
-    axes[0, 0].step(inventories, dp_bids, "b-o", where="mid", ms=5, label="DP bid")
-    axes[0, 0].step(inventories, rl_bids, "r-s", where="mid", ms=5, label="RL bid", ls="--")
+    axes[0, 0].step(inventories, dp_bids, "b-o", where="mid", ms=5, label="DP")
+    axes[0, 0].step(inventories, rl_bids, "r-s", where="mid", ms=5, label="RL", ls="--")
     axes[0, 0].set_xlabel("Inventory")
     axes[0, 0].set_ylabel("Half-spread")
     axes[0, 0].set_title("Optimal Policy: Bid Spreads")
     axes[0, 0].legend(fontsize=8)
     axes[0, 0].grid(True, alpha=0.3)
 
-    # (0,1) Optimal policy: asks only (DP vs RL)
-    axes[0, 1].step(inventories, dp_asks, "b-o", where="mid", ms=5, label="DP ask")
-    axes[0, 1].step(inventories, rl_asks, "r-s", where="mid", ms=5, label="RL ask", ls="--")
+    # (0,1) Ask spreads
+    axes[0, 1].step(inventories, dp_asks, "b-o", where="mid", ms=5, label="DP")
+    axes[0, 1].step(inventories, rl_asks, "r-s", where="mid", ms=5, label="RL", ls="--")
     axes[0, 1].set_xlabel("Inventory")
     axes[0, 1].set_ylabel("Half-spread")
     axes[0, 1].set_title("Optimal Policy: Ask Spreads")
@@ -156,21 +248,24 @@ def main():
     # (1,1) Final inventory distribution
     inv_bins = range(-params.max_inventory - 1, params.max_inventory + 2)
     axes[1, 1].hist(dp_stats["final_inventories"], bins=inv_bins, alpha=0.5,
-                     label="DP", edgecolor="k", align="left")
+                    label="DP", edgecolor="k", align="left")
     axes[1, 1].hist(rl_stats["final_inventories"], bins=inv_bins, alpha=0.5,
-                     label="RL", edgecolor="k", align="left")
+                    label="RL", edgecolor="k", align="left")
     axes[1, 1].set_xlabel("Final Inventory")
     axes[1, 1].set_ylabel("Frequency")
     axes[1, 1].set_title("Final Inventory Distribution")
     axes[1, 1].legend()
 
-    # Hide unused (1,2)
     axes[1, 2].set_visible(False)
 
-    fig.suptitle("Experiment 1: Inventory-Only State (DP vs RL)", fontsize=14, y=1.01)
+    fig.suptitle(f"Experiment 1: Inventory-Only State — DP vs RL  (run {run_id})",
+                 fontsize=14, y=1.01)
     plt.tight_layout()
+    path = os.path.join(plot_dir, "comparison.png")
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    # also keep the results/ copy for backward compat
     plt.savefig("results/exp1_comparison.png", dpi=150, bbox_inches="tight")
-    print("→ saved results/exp1_comparison.png")
+    print(f"  → saved {path}")
     plt.show()
 
 

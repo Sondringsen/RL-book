@@ -50,7 +50,7 @@ def main():
     train_params = MarketParams(
         spread_options=SPREAD_OPTIONS,
         terminal_penalty=0.0,
-        sigma_base=0.0,       # remove I·σ·ε noise that swamps spread signal (SNR ≈ 0.5 at σ=1)
+        # sigma_base=1.0,       # remove I·σ·ε noise that swamps spread signal (SNR ≈ 0.5 at σ=1)
         episode_length=1000,  # γ^1000 ≈ 0 → no terminal truncation bias
     )
     print("\n[2/4] Training DQN (state = one-hot inv+price, random init for full coverage) …")
@@ -67,7 +67,7 @@ def main():
         n_actions=train_env.n_actions,
         lr=2e-4,
         gamma=train_params.discount,
-        batch_size=64,
+        batch_size=256,
         hidden_dim=256,
         learning_starts=15_000,
         tau=0.005,
@@ -75,7 +75,7 @@ def main():
     )
     ep_rewards, _ = agent.train(
         train_env,
-        n_episodes=3_000,  # 3 000 × 1 000 = 3M steps (same budget as before)
+        n_episodes=1500,  # 3 000 × 1 000 = 3M steps (same budget as before)
         epsilon_start=1.0,
         epsilon_end=0.02,
         epsilon_decay_steps=800_000,

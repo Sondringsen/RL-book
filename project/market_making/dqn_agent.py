@@ -207,17 +207,22 @@ class DQNAgent:
         epsilon_decay_steps: int = None,
         verbose: bool = True,
         use_boundary_mask: bool = True,
+        log_interval: int = 100,
     ):
         # [CHANGE] Step-based epsilon decay: default decay over 400k steps if not set
         if epsilon_decay_steps is None:
             epsilon_decay_steps = 400_000
         episode_rewards: list[float] = []
         losses: list[float] = []
+        episode_epsilons: list[float] = []
+        episode_mean_losses: list[float] = []
 
         for ep in range(n_episodes):
             obs = env.reset()
             total_reward = 0.0
             done = False
+            ep_losses: list[float] = []
+            epsilon = epsilon_start
 
             while not done:
                 # [CHANGE] Epsilon from total_steps (linear decay over epsilon_decay_steps)
@@ -242,18 +247,34 @@ class DQNAgent:
                 loss = self._update()
                 if loss is not None:
                     losses.append(loss)
+                    ep_losses.append(loss)
 
             episode_rewards.append(total_reward)
+            episode_epsilons.append(epsilon)
+            episode_mean_losses.append(
+                float(np.mean(ep_losses)) if ep_losses else float("nan")
+            )
 
-            if verbose and (ep + 1) % 500 == 0:
-                recent = episode_rewards[-500:]
+            if verbose and (ep + 1) % log_interval == 0:
+                recent_rew = episode_rewards[-log_interval:]
+                recent_loss = [
+                    l for l in episode_mean_losses[-log_interval:] if not np.isnan(l)
+                ]
+                loss_str = (
+                    f"loss={np.mean(recent_loss):.4f}  " if recent_loss else "loss=n/a  "
+                )
                 print(
                     f"  ep {ep+1:>5d}/{n_episodes}  "
-                    f"reward(last 500)={np.mean(recent):+.2f}  "
+                    f"reward(last {log_interval})={np.mean(recent_rew):+.2f}  "
+                    f"{loss_str}"
                     f"ε={epsilon:.3f}  steps={self.total_steps}"
                 )
 
-        return episode_rewards, losses
+        return episode_rewards, {
+            "losses": losses,
+            "episode_epsilons": episode_epsilons,
+            "episode_mean_losses": episode_mean_losses,
+        }
 
     # ── evaluation ────────────────────────────────────────────────────────
 
