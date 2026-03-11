@@ -189,9 +189,28 @@ def main():
             episode_seed_base=EVAL_SEED,
         )
         _print_table(dp_stats, rl_stats, has_dp=True)
+        print("\n  Experiment 2 Real-World — Mean MtM PnL:")
+        print(f"    DP: {dp_stats['mean_pnl']:.2f}  RL (continuous): {rl_stats['mean_pnl']:.2f}")
     else:
         dp_stats = None
         _print_table(None, rl_stats, has_dp=False)
+        print("\n  Experiment 2 Real-World — Mean MtM PnL:")
+        print(f"    RL (continuous): {rl_stats['mean_pnl']:.2f}")
+
+    # Cumulative PnL
+    n_ep = len(rl_stats["episode_pnls"])
+    fig_pnl, ax_pnl = plt.subplots(1, 1, figsize=(10, 4))
+    ax_pnl.plot(range(1, n_ep + 1), np.cumsum(rl_stats["episode_pnls"]), label="RL (continuous)", lw=1)
+    if dp_stats is not None:
+        ax_pnl.plot(range(1, n_ep + 1), np.cumsum(dp_stats["episode_pnls"]), label="DP", lw=1)
+    ax_pnl.set_xlabel("Episode")
+    ax_pnl.set_ylabel("Cumulative MtM PnL")
+    ax_pnl.set_title("Experiment 2 Real-World: Cumulative PnL")
+    ax_pnl.legend(fontsize=8)
+    ax_pnl.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("results/exp2_realworld_pnl.png", dpi=150, bbox_inches="tight")
+    print("→ saved results/exp2_realworld_pnl.png")
 
     # ── Plots ─────────────────────────────────────────────────────────
     print("\nPlotting …")
