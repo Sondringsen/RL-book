@@ -14,15 +14,15 @@ def _is_a100() -> bool:
 def gpu_batch_size(base: int) -> int:
     """Scale batch size for GPU throughput.
 
-    - A100: 4x, cap 2048
-    - Other CUDA: 2x, cap 512
+    - A100: 8x, cap 4096 (saturate the GPU)
+    - Other CUDA: 4x, cap 1024
     - CPU: base unchanged
     """
     if not torch.cuda.is_available():
         return base
     if _is_a100():
-        return min(base * 4, 2048)
-    return min(base * 2, 512)
+        return min(base * 8, 4096)
+    return min(base * 4, 1024)
 
 
 def gpu_hidden_dim(base: int) -> int:

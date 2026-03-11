@@ -195,6 +195,36 @@ class DQNAgent:
                 q_vals = q_vals.masked_fill(invalid.unsqueeze(0), float("-inf"))
             return int(q_vals.argmax(dim=1).item())
 
+    def select_actions_batch(
+        self,
+        states: np.ndarray,
+        epsilon: float,
+        valid_masks: np.ndarray = None,
+    ) -> np.ndarray:
+        """Batch action selection for vectorized env. states: (N, state_dim)."""
+        n = len(states)
+        actions = np.empty(n, dtype=np.int64)
+        # Random actions for epsilon
+        rand_mask = np.random.random(n) < epsilon
+        if valid_masks is not None:
+            for i in np.where(rand_mask)[0]:
+                valid = np.where(valid_masks[i])[0]
+                actions[i] = valid[random.randrange(len(valid))]
+        else:
+            actions[rand_mask] = np.random.randint(0, self.n_actions, size=rand_mask.sum())
+        # Greedy for rest
+        greedy = ~rand_mask
+        if greedy.any():
+            with torch.no_grad():
+                s = torch.as_tensor(states[greedy], dtype=torch.float32, device=self.device)
+                q = self.q_net(s)
+                if valid_masks is not None:
+                    masks = valid_masks[greedy]
+                    invalid = torch.as_tensor(~masks, dtype=torch.bool, device=self.device)
+                    q = q.masked_fill(invalid, float("-inf"))
+                actions[greedy] = q.argmax(dim=1).cpu().numpy()
+        return actions
+
     @staticmethod
     def boundary_mask(inventory: int, params) -> np.ndarray:
         """Boolean mask of valid actions given current inventory boundary.
@@ -311,8 +341,101 @@ class DQNAgent:
         uniform_state_interval: int = None,
         # With probability X, sample from extreme states (inv ±max, extreme price bins)
         extreme_state_prob: float = 0.0,
+        # Vectorized env: N parallel envs for GPU saturation (auto-detected)
+        n_envs: int = 1,
     ):
-        # [CHANGE] Step-based epsilon decay: default decay over 400k steps if not set
+        # Use fast vectorized path when n_envs > 1 or env is vectorized
+        vec_env = hasattr(env, "n_envs") and getattr(env, "n_envs", 0) > 1
+        if n_envs > 1 or vec_env:
+            ep_len = env.params.episode_length
+            n_steps = n_episodes * ep_len
+            return self._train_vectorized(
+                env, n_steps, epsilon_start, epsilon_end, epsilon_decay_steps or 400_000,
+                verbose, use_boundary_mask, log_interval,
+            )
+        return self._train_sequential(
+            env, n_episodes, epsilon_start, epsilon_end, epsilon_decay_episodes,
+            epsilon_decay_steps, verbose, use_boundary_mask, log_interval,
+            uniform_state_interval, extreme_state_prob,
+        )
+
+    def _train_vectorized(
+        self,
+        env,
+        n_steps: int,
+        epsilon_start: float,
+        epsilon_end: float,
+        epsilon_decay_steps: int,
+        verbose: bool,
+        use_boundary_mask: bool,
+        log_interval: int,
+    ):
+        """Fast path: N envs in parallel, batch action selection, saturates GPU."""
+        n_envs = env.n_envs
+        params = env.params
+        episode_rewards: list[float] = []
+        losses: list[float] = []
+        running_rewards = np.zeros(n_envs)
+        n_iters = (n_steps + n_envs - 1) // n_envs
+
+        obs = env.reset()
+        for it in range(n_iters):
+            decay_frac = min(1.0, self.total_steps / max(epsilon_decay_steps, 1))
+            epsilon = epsilon_end + (1.0 - decay_frac) * (epsilon_start - epsilon_end)
+
+            valid_masks = None
+            if use_boundary_mask:
+                valid_masks = np.array([
+                    self.boundary_mask(e.inventory, params) for e in env.envs
+                ])
+
+            actions = self.select_actions_batch(obs, epsilon, valid_masks)
+            next_obs, rewards, dones, _ = env.step(actions)
+
+            if self.clip_reward:
+                rewards = np.clip(rewards, -1.0, 1.0)
+
+            for i in range(n_envs):
+                self.buffer.push(obs[i], actions[i], float(rewards[i]), next_obs[i], float(dones[i]))
+            self.total_steps += n_envs
+
+            for i in range(n_envs):
+                running_rewards[i] += rewards[i]
+                if dones[i]:
+                    episode_rewards.append(running_rewards[i])
+                    running_rewards[i] = 0.0
+
+            loss = self._update()
+            if loss is not None:
+                losses.append(loss)
+
+            obs = next_obs
+
+            if verbose and (it + 1) % max(1, log_interval) == 0:
+                recent = episode_rewards[-log_interval:] if episode_rewards else [0.0]
+                loss_str = f"loss={np.mean(losses[-log_interval*n_envs:]):.4f}  " if losses else "loss=n/a  "
+                print(
+                    f"  step {self.total_steps:>7d}  "
+                    f"reward(avg)={np.mean(recent):+.2f}  "
+                    f"{loss_str}ε={epsilon:.3f}  envs={n_envs}"
+                )
+
+        return episode_rewards, {"losses": losses}
+
+    def _train_sequential(
+        self,
+        env,
+        n_episodes: int,
+        epsilon_start: float,
+        epsilon_end: float,
+        epsilon_decay_episodes: int,
+        epsilon_decay_steps: int,
+        verbose: bool,
+        use_boundary_mask: bool,
+        log_interval: int,
+        uniform_state_interval: int,
+        extreme_state_prob: float,
+    ):
         if epsilon_decay_steps is None:
             epsilon_decay_steps = 400_000
         episode_rewards: list[float] = []
@@ -320,7 +443,6 @@ class DQNAgent:
         episode_epsilons: list[float] = []
         episode_mean_losses: list[float] = []
 
-        # [CHANGE] Hoist getattr above episode loop
         price_grid = getattr(env, "price_grid", None)
         params = env.params
         price_scale = getattr(env, "price_scale", 10.0)

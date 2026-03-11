@@ -10,7 +10,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from market_making import MarketParams, MarketMakingEnv, DQNAgent
+from market_making import MarketParams, MarketMakingEnv, VecMarketMakingEnv, DQNAgent
 from market_making.dp_solver import value_iteration_2d, simulate_dp_policy_2d
 from market_making.gpu_config import gpu_batch_size, gpu_hidden_dim, gpu_info
 
@@ -59,14 +59,16 @@ def main():
         episode_length=750,
     )
 
-    # ── RL Regular (continuous state) ───────────────────────────────────
-    print("\n[2/5] Training DQN (continuous state) …")
+    # ── RL Regular (continuous state) — vectorized for GPU ─────────────
+    print("\n[2/5] Training DQN (continuous state, vectorized) …")
     t0 = time.perf_counter()
-    train_env_reg = MarketMakingEnv(
-        train_params, use_volatility_dynamics=False,
-        include_price=True, price_scale=PRICE_SCALE, discrete_inventory=True, price_grid=price_grid,
-        random_init=True, use_continuous_state=True, seed=SEED,
-    )
+    def _make_env_reg():
+        return MarketMakingEnv(
+            train_params, use_volatility_dynamics=False,
+            include_price=True, price_scale=PRICE_SCALE, discrete_inventory=True, price_grid=price_grid,
+            random_init=True, use_continuous_state=True, seed=SEED,
+        )
+    train_env_reg = VecMarketMakingEnv(32, _make_env_reg)
     agent_reg = DQNAgent(
         state_dim=train_env_reg.state_dim, n_actions=train_env_reg.n_actions,
         lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
@@ -80,14 +82,16 @@ def main():
     timings["RL (regular)"] = time.perf_counter() - t0
     print(f"  RL (regular) trained in {timings['RL (regular)']:.1f} s")
 
-    # ── RL Discrete (one-hot state) ─────────────────────────────────────
-    print("\n[3/5] Training DQN (discrete state) …")
+    # ── RL Discrete (one-hot state) — vectorized for GPU ───────────────
+    print("\n[3/5] Training DQN (discrete state, vectorized) …")
     t0 = time.perf_counter()
-    train_env_disc = MarketMakingEnv(
-        train_params, use_volatility_dynamics=False,
-        include_price=True, price_scale=PRICE_SCALE, discrete_inventory=True, price_grid=price_grid,
-        random_init=True, use_continuous_state=False, seed=SEED,
-    )
+    def _make_env_disc():
+        return MarketMakingEnv(
+            train_params, use_volatility_dynamics=False,
+            include_price=True, price_scale=PRICE_SCALE, discrete_inventory=True, price_grid=price_grid,
+            random_init=True, use_continuous_state=False, seed=SEED,
+        )
+    train_env_disc = VecMarketMakingEnv(32, _make_env_disc)
     agent_disc = DQNAgent(
         state_dim=train_env_disc.state_dim, n_actions=train_env_disc.n_actions,
         lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,

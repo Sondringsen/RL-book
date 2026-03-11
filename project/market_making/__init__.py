@@ -1,5 +1,5 @@
 from .params import MarketParams
-from .simulator import MarketMakingEnv
+from .simulator import MarketMakingEnv, VecMarketMakingEnv
 from .dp_solver import (
     value_iteration,
     simulate_dp_policy,
