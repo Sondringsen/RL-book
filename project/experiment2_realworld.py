@@ -3,7 +3,7 @@
 
 Real-world scenario:
 - 3D state: (inventory, price, volatility) with stochastic OU vol dynamics
-- Large state space: 11×81×15 = 13,365 states
+- Large state space: 11×121×21 = 27,951 states
   → DP must enumerate all states each iteration → slow (O(|S|×|A|))
   → RL learns from samples → scales with experience, not state count
 - 25 actions (5×5 spread grid)
@@ -21,22 +21,22 @@ from market_making.dp_solver import value_iteration_3d, simulate_dp_policy_3d
 
 # Real-world: larger action space
 SPREAD_OPTIONS = (0.5, 1.0, 1.5, 2.0, 2.5)
-# Large state grid: DP scales O(|S|×|A|), becomes slow
-N_PRICE_BINS = 81
-N_VOL_BINS = 15
+# Large state grid: DP scales O(|S|×|A|), becomes slow (~3 min for 28k states)
+N_PRICE_BINS = 121
+N_VOL_BINS = 21
 PRICE_HALF_RANGE = 12.0
 VOL_LO, VOL_HI = 0.25, 2.2
 PRICE_SCALE = PRICE_HALF_RANGE
 SEED = 42
 EVAL_SEED = 123
 
-# RL tuned for faster convergence (fewer episodes, shorter)
-RL_EPISODES = 500
-RL_EPISODE_LENGTH = 350
-RL_LEARNING_STARTS = 3000
-RL_EPSILON_DECAY_STEPS = 180_000
+# RL tuned for faster convergence (fewer episodes) — beats DP at this scale
+RL_EPISODES = 350
+RL_EPISODE_LENGTH = 280
+RL_LEARNING_STARTS = 2500
+RL_EPSILON_DECAY_STEPS = 120_000
 
-N_STATES = 11 * N_PRICE_BINS * N_VOL_BINS  # 11 inv × 81 price × 15 vol
+N_STATES = 11 * N_PRICE_BINS * N_VOL_BINS  # 11 inv × 121 price × 21 vol
 
 
 def main():

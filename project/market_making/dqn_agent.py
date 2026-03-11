@@ -23,14 +23,20 @@ class ReplayBuffer:
 
     def sample(self, batch_size: int):
         batch = random.sample(self.buf, batch_size)
-        s, a, r, ns, d = zip(*batch)
-        return (
-            np.array(s, dtype=np.float32),
-            np.array(a, dtype=np.int64),
-            np.array(r, dtype=np.float32),
-            np.array(ns, dtype=np.float32),
-            np.array(d, dtype=np.float32),
-        )
+        n = len(batch)
+        s0, a0, r0, ns0, d0 = batch[0]
+        s_arr = np.empty((n,) + np.shape(s0), dtype=np.float32)
+        a_arr = np.empty(n, dtype=np.int64)
+        r_arr = np.empty(n, dtype=np.float32)
+        ns_arr = np.empty((n,) + np.shape(ns0), dtype=np.float32)
+        d_arr = np.empty(n, dtype=np.float32)
+        for i, (s, a, r, ns, d) in enumerate(batch):
+            s_arr[i] = s
+            a_arr[i] = a
+            r_arr[i] = r
+            ns_arr[i] = ns
+            d_arr[i] = d
+        return s_arr, a_arr, r_arr, ns_arr, d_arr
 
     def __len__(self):
         return len(self.buf)
@@ -40,32 +46,39 @@ class PrioritizedReplayBuffer:
     """Oversamples transitions from rare (extreme inventory/price) states."""
 
     def __init__(self, capacity: int = 50_000, rare_priority: float = 3.0):
-        self.buf: list = []
-        self.priorities: list = []
+        self.buf: deque = deque(maxlen=capacity)
+        self.priorities: deque = deque(maxlen=capacity)
         self.capacity = capacity
         self.rare_priority = rare_priority
+        self._priority_sum: float = 0.0
 
     def push(self, state, action, reward, next_state, done, is_rare: bool = False):
         priority = self.rare_priority if is_rare else 1.0
+        if len(self.buf) == self.capacity:
+            self._priority_sum -= self.priorities[0]
         self.priorities.append(priority)
         self.buf.append((state, action, reward, next_state, done))
-        if len(self.buf) > self.capacity:
-            self.buf.pop(0)
-            self.priorities.pop(0)
+        self._priority_sum += priority
 
     def sample(self, batch_size: int):
         n = len(self.buf)
-        probs = np.array(self.priorities, dtype=np.float64) / sum(self.priorities)
+        probs = np.array(self.priorities, dtype=np.float64) / (self._priority_sum + 1e-8)
         indices = np.random.choice(n, size=min(batch_size, n), replace=(batch_size > n), p=probs)
         batch = [self.buf[i] for i in indices]
-        s, a, r, ns, d = zip(*batch)
-        return (
-            np.array(s, dtype=np.float32),
-            np.array(a, dtype=np.int64),
-            np.array(r, dtype=np.float32),
-            np.array(ns, dtype=np.float32),
-            np.array(d, dtype=np.float32),
-        )
+        n_b = len(batch)
+        s0, a0, r0, ns0, d0 = batch[0]
+        s_arr = np.empty((n_b,) + np.shape(s0), dtype=np.float32)
+        a_arr = np.empty(n_b, dtype=np.int64)
+        r_arr = np.empty(n_b, dtype=np.float32)
+        ns_arr = np.empty((n_b,) + np.shape(ns0), dtype=np.float32)
+        d_arr = np.empty(n_b, dtype=np.float32)
+        for i, (s, a, r, ns, d) in enumerate(batch):
+            s_arr[i] = s
+            a_arr[i] = a
+            r_arr[i] = r
+            ns_arr[i] = ns
+            d_arr[i] = d
+        return s_arr, a_arr, r_arr, ns_arr, d_arr
 
     def __len__(self):
         return len(self.buf)
@@ -87,6 +100,8 @@ class QNetwork(nn.Module):
 
 
 class DQNAgent:
+    _boundary_mask_cache: dict = {}
+
     def __init__(
         self,
         state_dim: int,
@@ -122,10 +137,14 @@ class DQNAgent:
         self.clip_reward = clip_reward          # [CHANGE] clip rewards to [-1, 1] when True
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.loss_fn = nn.SmoothL1Loss()
+        self.ce_loss_fn = nn.CrossEntropyLoss()
 
         self.q_net = QNetwork(state_dim, n_actions, hidden_dim).to(self.device)
         self.target_net = QNetwork(state_dim, n_actions, hidden_dim).to(self.device)
         self.target_net.load_state_dict(self.q_net.state_dict())
+        if hasattr(torch, "compile"):
+            self.q_net = torch.compile(self.q_net, mode="reduce-overhead")
 
         self.optimiser = optim.Adam(self.q_net.parameters(), lr=lr)
         self.buffer = (
@@ -138,6 +157,17 @@ class DQNAgent:
         self.total_steps = 0   # [CHANGE] total environment steps (for learning_starts + ε decay)
 
     # ── action selection ─────────────────────────────────────────────
+
+    def _valid_actions_from_mask(self, valid_mask: np.ndarray) -> np.ndarray:
+        """Use pre-cached valid_actions if mask matches a cached boundary mask."""
+        for cached in DQNAgent._boundary_mask_cache.values():
+            if np.array_equal(valid_mask, cached[0]):
+                return cached[3]
+            if np.array_equal(valid_mask, cached[1]):
+                return cached[4]
+            if np.array_equal(valid_mask, cached[2]):
+                return cached[5]
+        return np.where(valid_mask)[0]
 
     def select_action(
         self,
@@ -154,7 +184,7 @@ class DQNAgent:
         """
         if random.random() < epsilon:
             if valid_mask is not None:
-                valid_actions = np.where(valid_mask)[0]
+                valid_actions = self._valid_actions_from_mask(valid_mask)
                 return int(valid_actions[random.randrange(len(valid_actions))])
             return random.randrange(self.n_actions)
         with torch.no_grad():
@@ -175,20 +205,33 @@ class DQNAgent:
         spread (highest ask_idx) so the agent signals "don't sell".
         Otherwise all actions are valid.
         """
-        n = params.n_spread_options
-        n_actions = n * n
-        mask = np.ones(n_actions, dtype=bool)
+        key = (params.n_spread_options, params.max_inventory)
+        if key not in DQNAgent._boundary_mask_cache:
+            n = params.n_spread_options
+            n_actions = n * n
+            mask_normal = np.ones(n_actions, dtype=bool)
+            mask_upper = np.zeros(n_actions, dtype=bool)
+            for a in range(n_actions):
+                if a // n == n - 1:
+                    mask_upper[a] = True
+            mask_lower = np.zeros(n_actions, dtype=bool)
+            for a in range(n_actions):
+                if a % n == n - 1:
+                    mask_lower[a] = True
+            valid_normal = np.arange(n_actions)
+            valid_upper = np.where(mask_upper)[0]
+            valid_lower = np.where(mask_lower)[0]
+            DQNAgent._boundary_mask_cache[key] = (
+                mask_normal, mask_upper, mask_lower,
+                valid_normal, valid_upper, valid_lower,
+            )
+        cached = DQNAgent._boundary_mask_cache[key]
+        mask_normal, mask_upper, mask_lower = cached[0], cached[1], cached[2]
         if inventory >= params.max_inventory:
-            # only allow actions with bid_idx == n-1 (widest bid spread)
-            for a in range(n_actions):
-                if a // n != n - 1:
-                    mask[a] = False
-        elif inventory <= -params.max_inventory:
-            # only allow actions with ask_idx == n-1 (widest ask spread)
-            for a in range(n_actions):
-                if a % n != n - 1:
-                    mask[a] = False
-        return mask
+            return mask_upper
+        if inventory <= -params.max_inventory:
+            return mask_lower
+        return mask_normal
 
     # ── one gradient step (Double DQN, Huber, soft target, learning_starts) ─
 
@@ -202,11 +245,24 @@ class DQNAgent:
         states, actions, rewards, next_states, dones = self.buffer.sample(
             self.batch_size
         )
-        states = torch.FloatTensor(states).to(self.device)
-        actions = torch.LongTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
-        next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device)
+        pin_mem = self.device.type == "cuda"
+        states = torch.as_tensor(states, dtype=torch.float32)
+        actions = torch.as_tensor(actions, dtype=torch.int64)
+        rewards = torch.as_tensor(rewards, dtype=torch.float32)
+        next_states = torch.as_tensor(next_states, dtype=torch.float32)
+        dones = torch.as_tensor(dones, dtype=torch.float32)
+        if pin_mem:
+            states = states.pin_memory().to(self.device, non_blocking=True)
+            actions = actions.pin_memory().to(self.device, non_blocking=True)
+            rewards = rewards.pin_memory().to(self.device, non_blocking=True)
+            next_states = next_states.pin_memory().to(self.device, non_blocking=True)
+            dones = dones.pin_memory().to(self.device, non_blocking=True)
+        else:
+            states = states.to(self.device)
+            actions = actions.to(self.device)
+            rewards = rewards.to(self.device)
+            next_states = next_states.to(self.device)
+            dones = dones.to(self.device)
 
         q_vals = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
@@ -219,7 +275,7 @@ class DQNAgent:
             targets = rewards + self.gamma * next_q * (1 - dones)
 
         # [CHANGE] Huber loss (Smooth L1) instead of MSE
-        loss = nn.SmoothL1Loss()(q_vals, targets)
+        loss = self.loss_fn(q_vals, targets)
 
         self.optimiser.zero_grad()
         loss.backward()
@@ -229,12 +285,11 @@ class DQNAgent:
         self.train_steps += 1
 
         # [CHANGE] Soft target update (Polyak) every step instead of hard sync
-        for target_param, param in zip(
-            self.target_net.parameters(), self.q_net.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1.0 - self.tau) * target_param.data
-            )
+        with torch.no_grad():
+            for target_param, param in zip(
+                self.target_net.parameters(), self.q_net.parameters()
+            ):
+                target_param.lerp_(param, self.tau)
 
         return loss.item()
 
@@ -265,9 +320,10 @@ class DQNAgent:
         episode_epsilons: list[float] = []
         episode_mean_losses: list[float] = []
 
-        # For uniform state injection: need price_grid from env
+        # [CHANGE] Hoist getattr above episode loop
         price_grid = getattr(env, "price_grid", None)
         params = env.params
+        price_scale = getattr(env, "price_scale", 10.0)
 
         for ep in range(n_episodes):
             obs = env.reset()
@@ -313,7 +369,6 @@ class DQNAgent:
                 # [CHANGE] Optional reward clipping to [-1, 1]
                 if self.clip_reward:
                     reward = float(np.clip(reward, -1.0, 1.0))
-                price_scale = getattr(env, "price_scale", 10.0)
                 is_rare = (
                     abs(inv_before) >= params.max_inventory - 1
                     or abs(price_dev_before) >= 0.8 * price_scale
@@ -424,6 +479,9 @@ class DQNAgent:
         dataset_actions = np.array(dataset_actions, dtype=np.int64)
         n_states = len(dataset_actions)
 
+        states_t = torch.as_tensor(dataset_states, dtype=torch.float32, device=self.device)
+        actions_t = torch.as_tensor(dataset_actions, dtype=torch.int64, device=self.device)
+
         losses = []
         for epoch in range(n_epochs):
             perm = np.random.permutation(n_states)
@@ -431,11 +489,11 @@ class DQNAgent:
             n_batches = 0
             for start in range(0, n_states, batch_size):
                 idx = perm[start : start + batch_size]
-                states = torch.FloatTensor(dataset_states[idx]).to(self.device)
-                targets = torch.LongTensor(dataset_actions[idx]).to(self.device)
+                states = states_t[idx]
+                targets = actions_t[idx]
 
                 logits = self.q_net(states)
-                loss = nn.CrossEntropyLoss()(logits, targets)
+                loss = self.ce_loss_fn(logits, targets)
 
                 self.optimiser.zero_grad()
                 loss.backward()
@@ -446,12 +504,11 @@ class DQNAgent:
                 n_batches += 1
 
             # Soft target update
-            for target_param, param in zip(
-                self.target_net.parameters(), self.q_net.parameters()
-            ):
-                target_param.data.copy_(
-                    self.tau * param.data + (1.0 - self.tau) * target_param.data
-                )
+            with torch.no_grad():
+                for target_param, param in zip(
+                    self.target_net.parameters(), self.q_net.parameters()
+                ):
+                    target_param.lerp_(param, self.tau)
 
             mean_loss = epoch_loss / max(n_batches, 1)
             losses.append(mean_loss)
@@ -459,7 +516,7 @@ class DQNAgent:
             if verbose and (epoch + 1) % log_interval == 0:
                 # Compute policy match accuracy
                 with torch.no_grad():
-                    all_logits = self.q_net(torch.FloatTensor(dataset_states).to(self.device))
+                    all_logits = self.q_net(states_t)
                     pred_actions = all_logits.argmax(dim=1).cpu().numpy()
                     match = (pred_actions == dataset_actions).mean() * 100
                 print(
