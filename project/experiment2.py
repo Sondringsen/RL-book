@@ -243,8 +243,8 @@ def main():
     plt.savefig("results/exp2_comparison.png", dpi=150, bbox_inches="tight")
     print("→ saved results/exp2_comparison.png")
 
-    # ── Policy heatmaps (4-way: DP, regular, discrete, distill) ─────────
-    fig2, axes2 = plt.subplots(2, 2, figsize=(12, 10))
+    # ── Policy heatmaps (DP, regular, discrete, distill) ─────────────────
+    fig2, axes2 = plt.subplots(2, 4, figsize=(20, 10))
     inv_norm = np.linspace(-1, 1, 21)
     price_norm = np.linspace(-1, 1, 21)
 
@@ -283,9 +283,13 @@ def main():
 
     for ax, data, title in [
         (axes2[0, 0], dp_bid_map, "DP: Bid δ*"),
-        (axes2[0, 1], dp_ask_map, "DP: Ask δ*"),
-        (axes2[1, 0], dist_bid_map, "RL (distill): Bid δ*"),
-        (axes2[1, 1], dist_ask_map, "RL (distill): Ask δ*"),
+        (axes2[0, 1], reg_bid_map, "RL (regular): Bid δ*"),
+        (axes2[0, 2], disc_bid_map, "RL (discrete): Bid δ*"),
+        (axes2[0, 3], dist_bid_map, "RL (distill): Bid δ*"),
+        (axes2[1, 0], dp_ask_map, "DP: Ask δ*"),
+        (axes2[1, 1], reg_ask_map, "RL (regular): Ask δ*"),
+        (axes2[1, 2], disc_ask_map, "RL (discrete): Ask δ*"),
+        (axes2[1, 3], dist_ask_map, "RL (distill): Ask δ*"),
     ]:
         im = ax.imshow(data, aspect="auto", origin="lower", extent=extent, cmap="viridis", vmin=vmin, vmax=vmax)
         ax.set_xlabel("Inventory")
@@ -293,7 +297,7 @@ def main():
         ax.set_title(title)
         plt.colorbar(im, ax=ax)
 
-    fig2.suptitle("Experiment 2: Policy Heatmaps (DP + RL distill)")
+    fig2.suptitle("Experiment 2: Policy Heatmaps (DP, regular, discrete, distill)")
     plt.tight_layout()
     plt.savefig("results/exp2_policy_heatmap.png", dpi=150, bbox_inches="tight")
     print("→ saved results/exp2_policy_heatmap.png")

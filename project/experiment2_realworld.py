@@ -286,6 +286,74 @@ def main():
     plt.savefig("results/exp2_realworld_comparison.png", dpi=150, bbox_inches="tight")
     print("→ saved results/exp2_realworld_comparison.png")
 
+    # ── Policy heatmaps (DP + RL continuous at mid vol) ──────────────────
+    if price_grid is not None and vol_grid is not None:
+        fig_hm, axes_hm = plt.subplots(2, 2, figsize=(12, 10))
+        inv_norm = np.linspace(-1, 1, 21)
+        price_norm = np.linspace(-1, 1, 21)
+
+        def build_heatmap_realworld(agent, env):
+            bid_map = np.zeros((len(price_norm), len(inv_norm)))
+            ask_map = np.zeros_like(bid_map)
+            vol_mid = float(vol_grid[mid_v])
+            for i, pn in enumerate(price_norm):
+                price_dev = pn * PRICE_HALF_RANGE
+                for j, ni in enumerate(inv_norm):
+                    inv = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1))
+                    inv = params.index_to_inventory(inv)
+                    obs = env.obs_for_state(inv, price_dev=price_dev, vol=vol_mid, order_flow=0.0)
+                    mask = DQNAgent.boundary_mask(inv, params)
+                    a = agent.select_action(obs, valid_mask=mask)
+                    db, da = params.action_to_spreads(a)
+                    bid_map[i, j] = db
+                    ask_map[i, j] = da
+            return bid_map, ask_map
+
+        rl_bid_map, rl_ask_map = build_heatmap_realworld(agent, eval_env)
+        extent = [inventories[0], inventories[-1], -PRICE_HALF_RANGE, PRICE_HALF_RANGE]
+        vmin, vmax = min(SPREAD_OPTIONS), max(SPREAD_OPTIONS)
+
+        if dp_result is not None:
+            _V, policy_dp, _pg, _vg = dp_result
+            dp_bid_map = np.zeros((len(price_norm), len(inv_norm)))
+            dp_ask_map = np.zeros_like(dp_bid_map)
+            for i, pn in enumerate(price_norm):
+                price_dev = pn * PRICE_HALF_RANGE
+                sp = int(np.clip(np.argmin(np.abs(_pg - price_dev)), 0, len(_pg) - 1))
+                for j, ni in enumerate(inv_norm):
+                    si = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1))
+                    db, da = params.action_to_spreads(policy_dp[si, sp, mid_v])
+                    dp_bid_map[i, j] = db
+                    dp_ask_map[i, j] = da
+            for ax, data, title in [
+                (axes_hm[0, 0], dp_bid_map, "DP: Bid δ*"),
+                (axes_hm[0, 1], rl_bid_map, "RL (continuous): Bid δ*"),
+                (axes_hm[1, 0], dp_ask_map, "DP: Ask δ*"),
+                (axes_hm[1, 1], rl_ask_map, "RL (continuous): Ask δ*"),
+            ]:
+                im = ax.imshow(data, aspect="auto", origin="lower", extent=extent, cmap="viridis", vmin=vmin, vmax=vmax)
+                ax.set_xlabel("Inventory")
+                ax.set_ylabel("Price deviation")
+                ax.set_title(title)
+                plt.colorbar(im, ax=ax)
+        else:
+            for ax, data, title in [
+                (axes_hm[0, 0], rl_bid_map, "RL (continuous): Bid δ*"),
+                (axes_hm[0, 1], rl_ask_map, "RL (continuous): Ask δ*"),
+            ]:
+                im = ax.imshow(data, aspect="auto", origin="lower", extent=extent, cmap="viridis", vmin=vmin, vmax=vmax)
+                ax.set_xlabel("Inventory")
+                ax.set_ylabel("Price deviation")
+                ax.set_title(title)
+                plt.colorbar(im, ax=ax)
+            axes_hm[1, 0].set_visible(False)
+            axes_hm[1, 1].set_visible(False)
+
+        fig_hm.suptitle("Experiment 2 Real-World: Policy Heatmaps at mid vol")
+        plt.tight_layout()
+        plt.savefig("results/exp2_realworld_policy_heatmap.png", dpi=150, bbox_inches="tight")
+        print("→ saved results/exp2_realworld_policy_heatmap.png")
+
     fig2, ax2 = plt.subplots(1, 1, figsize=(10, 5))
     if methods:
         bars2 = ax2.bar(methods, times_s, color=colors[: len(methods)], edgecolor="k")

@@ -215,6 +215,68 @@ def main():
     plt.tight_layout()
     plt.savefig("results/exp3_comparison.png", dpi=150, bbox_inches="tight")
     print("→ saved results/exp3_comparison.png")
+
+    # ── Policy heatmaps at mid vol (DP, regular, discrete, distill) ─────
+    fig2, axes2 = plt.subplots(2, 4, figsize=(20, 10))
+    mid_v = N_VOL_BINS // 2
+    vol_mid = float(vol_grid[mid_v])
+    inv_norm = np.linspace(-1, 1, 21)
+    price_norm = np.linspace(-1, 1, 21)
+
+    def build_heatmap_3d(agent, env):
+        bid_map = np.zeros((len(price_norm), len(inv_norm)))
+        ask_map = np.zeros_like(bid_map)
+        for i, pn in enumerate(price_norm):
+            price_dev = pn * PRICE_HALF_RANGE
+            for j, ni in enumerate(inv_norm):
+                inv = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1))
+                inv = params.index_to_inventory(inv)
+                obs = env.obs_for_state(inv, price_dev=price_dev, vol=vol_mid)
+                mask = DQNAgent.boundary_mask(inv, params)
+                a = agent.select_action(obs, valid_mask=mask)
+                db, da = params.action_to_spreads(a)
+                bid_map[i, j] = db
+                ask_map[i, j] = da
+        return bid_map, ask_map
+
+    dp_bid_map = np.zeros((len(price_norm), len(inv_norm)))
+    dp_ask_map = np.zeros_like(dp_bid_map)
+    for i, pn in enumerate(price_norm):
+        sp = int(np.clip(np.round((pn * PRICE_HALF_RANGE - price_grid[0]) / (price_grid[1] - price_grid[0])), 0, N_PRICE_BINS - 1))
+        for j, ni in enumerate(inv_norm):
+            si = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1))
+            db, da = params.action_to_spreads(policy_dp[si, sp, mid_v])
+            dp_bid_map[i, j] = db
+            dp_ask_map[i, j] = da
+
+    reg_bid_map, reg_ask_map = build_heatmap_3d(agent_reg, eval_reg)
+    disc_bid_map, disc_ask_map = build_heatmap_3d(agent_disc, eval_disc)
+    dist_bid_map, dist_ask_map = build_heatmap_3d(agent_dist, eval_dist)
+
+    extent = [inventories[0], inventories[-1], -PRICE_HALF_RANGE, PRICE_HALF_RANGE]
+    vmin, vmax = min(SPREAD_OPTIONS), max(SPREAD_OPTIONS)
+
+    for ax, data, title in [
+        (axes2[0, 0], dp_bid_map, "DP: Bid δ*"),
+        (axes2[0, 1], reg_bid_map, "RL (regular): Bid δ*"),
+        (axes2[0, 2], disc_bid_map, "RL (discrete): Bid δ*"),
+        (axes2[0, 3], dist_bid_map, "RL (distill): Bid δ*"),
+        (axes2[1, 0], dp_ask_map, "DP: Ask δ*"),
+        (axes2[1, 1], reg_ask_map, "RL (regular): Ask δ*"),
+        (axes2[1, 2], disc_ask_map, "RL (discrete): Ask δ*"),
+        (axes2[1, 3], dist_ask_map, "RL (distill): Ask δ*"),
+    ]:
+        im = ax.imshow(data, aspect="auto", origin="lower", extent=extent, cmap="viridis", vmin=vmin, vmax=vmax)
+        ax.set_xlabel("Inventory")
+        ax.set_ylabel("Price deviation")
+        ax.set_title(title)
+        plt.colorbar(im, ax=ax)
+
+    fig2.suptitle(f"Experiment 3: Policy Heatmaps at mid vol (σ={vol_mid:.2f})")
+    plt.tight_layout()
+    plt.savefig("results/exp3_policy_heatmap.png", dpi=150, bbox_inches="tight")
+    print("→ saved results/exp3_policy_heatmap.png")
+
     plt.show()
 
 
