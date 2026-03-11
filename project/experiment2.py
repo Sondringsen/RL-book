@@ -56,7 +56,7 @@ def main():
 
     train_params = MarketParams(
         spread_options=SPREAD_OPTIONS, terminal_penalty=0.0, sigma_base=SIGMA_BASE,
-        episode_length=750,
+        episode_length=300,
     )
 
     # ── RL Regular (continuous state) — vectorized for GPU ─────────────
@@ -76,7 +76,7 @@ def main():
         use_prioritized_replay=True, rare_priority=3.0,
     )
     agent_reg.train(
-        train_env_reg, n_episodes=2000, epsilon_decay_steps=500_000,
+        train_env_reg, n_episodes=500, epsilon_decay_steps=150_000,
         uniform_state_interval=8, extreme_state_prob=0.3, verbose=True,
     )
     timings["RL (regular)"] = time.perf_counter() - t0
@@ -99,7 +99,7 @@ def main():
         use_prioritized_replay=True, rare_priority=3.0,
     )
     agent_disc.train(
-        train_env_disc, n_episodes=2000, epsilon_decay_steps=500_000,
+        train_env_disc, n_episodes=500, epsilon_decay_steps=150_000,
         uniform_state_interval=8, extreme_state_prob=0.3, verbose=True,
     )
     timings["RL (discrete)"] = time.perf_counter() - t0

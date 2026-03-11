@@ -47,7 +47,7 @@ def main():
         spread_options=SPREAD_OPTIONS,
         terminal_penalty=0.0,
         sigma_base=SIGMA_BASE,
-        episode_length=750,
+        episode_length=300,
     )
     print("\n[2/4] Training DQN (DISCRETE state, one-hot inv+price) …")
     train_env = MarketMakingEnv(
@@ -74,10 +74,10 @@ def main():
     )
     ep_rewards, _ = agent.train(
         train_env,
-        n_episodes=2000,
+        n_episodes=500,
         epsilon_start=1.0,
         epsilon_end=0.02,
-        epsilon_decay_steps=500_000,
+        epsilon_decay_steps=150_000,
         uniform_state_interval=8,
         extreme_state_prob=0.3,
         verbose=True,

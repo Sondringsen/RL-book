@@ -44,7 +44,7 @@ def main():
         spread_options=SPREAD_OPTIONS,
         terminal_penalty=0.0,
         sigma_base=SIGMA_BASE,
-        episode_length=750,
+        episode_length=300,
     )
 
     # ── RL Regular (continuous state, vectorized for GPU) ───────────────
@@ -61,7 +61,7 @@ def main():
         lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
     )
-    agent_reg.train(train_env_reg, n_episodes=1500, epsilon_decay_steps=300_000, verbose=True)
+    agent_reg.train(train_env_reg, n_episodes=500, epsilon_decay_steps=150_000, verbose=True)
 
     # ── RL Discrete (one-hot state, vectorized for GPU) ──────────────────
     print("\n[3/5] Training DQN (discrete state, vectorized) …")
@@ -77,7 +77,7 @@ def main():
         lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
     )
-    agent_disc.train(train_env_disc, n_episodes=1500, epsilon_decay_steps=300_000, verbose=True)
+    agent_disc.train(train_env_disc, n_episodes=500, epsilon_decay_steps=150_000, verbose=True)
 
     # ── RL Distillation ────────────────────────────────────────────────
     print("\n[4/5] Training DQN via policy distillation …")
