@@ -1,0 +1,309 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{subcaption}
+
+\graphicspath{{../results/}}
+
+\title{Reinforcement Learning for Market Making:\\
+Dynamic Programming and Deep Q-Networks}
+\author{Sam \and Siddhant \and Sondre}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents a study of market making as a sequential decision-making problem using Markov Decision Processes (MDPs), Dynamic Programming (DP), and Deep Reinforcement Learning. The project is organized around three phases that progressively increase in realism, and three discrete experiments that span the transition from a simple, exactly-solvable model to a rich, multi-dimensional state space. In each experiment we run both value iteration (DP) and Deep Q-Networks (DQN) and compare their learned policies and performance. The experiments culminate with a fully continuous state-action formulation representative of the full Phase 3 goal.
+\end{abstract}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction and Motivation}
+% ─────────────────────────────────────────────────────────────────────────────
+
+A market maker continuously posts bid and ask quotes in an electronic limit order book and earns the bid–ask spread when orders are filled. The fundamental challenge is balancing profit from spread capture against inventory risk: holding a large long or short position in a volatile asset is dangerous. Classical solutions such as Avellaneda--Stoikov derive closed-form optimal policies under stylized assumptions. In practice, markets are non-stationary, exhibit fat tails, informed order flow, and microstructure frictions that violate these assumptions. Reinforcement learning offers a data-driven alternative that can adapt to richer, more realistic environments.
+
+\subsection*{Project Phases}
+
+The project follows three phases that are standard in the course framework:
+
+\begin{itemize}
+    \item \textbf{Phase 1} (Problem Definition): Full MDP formulation of the ideal market-making problem, including state space, action space, dynamics, and reward structure. This defines the target, but the full model is too complex to solve directly within the course.
+    \item \textbf{Phase 2} (DP Solution): A simplified, inventory-only model with constant volatility that is tractable via exact value iteration. This phase establishes the optimal policy structure and the tradeoff between spread capture and inventory risk.
+    \item \textbf{Phase 3} (RL Solution): A more realistic model with stochastic volatility (and optionally continuous price and action spaces) where DP becomes intractable and model-free RL is required.
+\end{itemize}
+
+\textbf{Experiments 1--3} in this report span from Phase 2 toward Phase 3. Experiment 1 is the pure Phase 2 model. Experiments 2 and 3 add price and stochastic volatility to the state, requiring discretization to remain DP-tractable---these sit between Phase 2 and Phase 3. The continuous-state, continuous-action formulation described at the end represents the full Phase 3 goal.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Common MDP Setup}
+% ─────────────────────────────────────────────────────────────────────────────
+
+All experiments share the following environment structure.
+
+\subsection{Quote Structure}
+
+The market maker posts asymmetric half-spreads $\delta^{\mathrm{bid}}, \delta^{\mathrm{ask}}$ around the mid-price $S_t$:
+\begin{equation}
+    \text{bid} = S_t - \delta^{\mathrm{bid}}, \qquad \text{ask} = S_t + \delta^{\mathrm{ask}}.
+\end{equation}
+
+\subsection{Order Flow}
+
+Customer orders arrive as independent Poisson processes with intensity depending on the quoted spread:
+\begin{equation}
+    \lambda(\delta) = A \exp(-k\,\delta),
+\end{equation}
+with base arrival rate $A = 0.5$ and decay $k = 1.5$. Fill probability per side per time step is
+\begin{equation}
+    P(\text{fill} \mid \delta) = 1 - \exp(-\lambda(\delta)).
+\end{equation}
+Tighter spreads attract more flow at the cost of higher inventory risk. Fills are blocked when they would push inventory beyond $|I_t| > I_{\max}$.
+
+\subsection{Price Dynamics and Adverse Selection}
+
+The mid-price evolves each step as
+\begin{equation}
+    \Delta S_t = \eta\,(\mathbf{1}_{\mathrm{ask\,fill}} - \mathbf{1}_{\mathrm{bid\,fill}}) + \sigma_t\,\varepsilon_t, \qquad \varepsilon_t \sim \mathcal{N}(0,1).
+\end{equation}
+The first term captures \emph{adverse selection}: an ask fill (someone buying from us) signals informed buying pressure, pushing the price up by $\eta = 0.2$; a bid fill (someone selling to us) pushes the price down. The second term is Gaussian price noise with volatility $\sigma_t$.
+
+\subsection{Reward Function}
+
+The reward at each step combines spread capture, full mark-to-market inventory P\&L, and a quadratic inventory penalty:
+\begin{equation}
+    r_t = \underbrace{\delta^{\mathrm{bid}}\,\mathbf{1}_{\mathrm{bid}} + \delta^{\mathrm{ask}}\,\mathbf{1}_{\mathrm{ask}}}_{\text{spread capture}}
+          + \underbrace{I_t\,\Delta S_t}_{\text{inventory P\&L}}
+          - \underbrace{\alpha\,I_t^2}_{\text{inventory penalty}}.
+\end{equation}
+At the terminal step, an additional penalty $\gamma_{\mathrm{term}}\,|I_T|$ is applied to discourage holding large positions at episode end.
+
+\subsection{Action Space}
+
+In all discrete experiments, actions are pairs of half-spreads:
+\begin{equation}
+    a_t = (\delta^{\mathrm{bid}}, \delta^{\mathrm{ask}}) \in \{0.5,\; 1.0,\; 1.5\}^2, \qquad |\mathcal{A}| = 9.
+\end{equation}
+
+\subsection{Default Parameters}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Parameter & Symbol & Value \\
+\midrule
+Max inventory & $I_{\max}$ & 5 \\
+Spread options & $\delta$ & $\{0.5, 1.0, 1.5\}$ \\
+Arrival base & $A$ & 0.5 \\
+Arrival decay & $k$ & 1.5 \\
+Adverse selection & $\eta$ & 0.2 \\
+Inventory penalty & $\alpha$ & 0.01 \\
+Terminal penalty & $\gamma_{\mathrm{term}}$ & 1.0 \\
+Discount factor & $\gamma$ & 0.99 \\
+Episode length & $T$ & 200 \\
+\bottomrule
+\end{tabular}
+\caption{Default parameters shared across all experiments.}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Algorithms}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Dynamic Programming: Value Iteration}
+
+For each experiment we construct the exact Bellman operator over the discretized state space and run value iteration until convergence:
+\begin{equation}
+    V_{k+1}(s) \leftarrow \max_{a \in \mathcal{A}}\; \sum_{s'} P(s' \mid s, a)\bigl[r(s, a, s') + \gamma\,V_k(s')\bigr].
+\end{equation}
+Convergence is declared when the maximum Bellman residual $\max_s |V_{k+1}(s) - V_k(s)|$ falls below a tolerance. This requires full knowledge of the transition model $P(s' \mid s, a)$, which is available analytically in our simulated environment. The computational cost scales as $\mathcal{O}(|\mathcal{S}|^2|\mathcal{A}|)$ per sweep (or $\mathcal{O}(|\mathcal{S}||\mathcal{A}||\mathcal{S}'|)$ exploiting transition sparsity), so the approach is tractable only for small state spaces.
+
+\subsection{Reinforcement Learning: Deep Q-Network (DQN)}
+
+The DQN agent approximates the action-value function $Q(s, a) \approx Q_\theta(s, a)$ using a multi-layer perceptron, updated via the TD loss:
+\begin{equation}
+    \mathcal{L}(\theta) = \bigl(r + \gamma \max_{a'} Q_{\bar\theta}(s', a') - Q_\theta(s, a)\bigr)^2,
+\end{equation}
+where $\bar\theta$ are parameters of a periodically-updated target network (soft Polyak update, $\tau = 0.005$). Training uses experience replay (capacity 50,000), a batch size of 64--256, and linear $\varepsilon$-greedy exploration decay. States are represented as concatenated one-hot vectors over the discretized inventory, price, and volatility grids, so the DQN operates on the same discrete state space as the DP.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiment 1: Inventory-Only State (Phase 2)}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Formulation}
+
+Experiment 1 implements the canonical Phase 2 model: the state is simply the inventory,
+\begin{equation}
+    s_t = I_t \in \{-I_{\max}, \ldots, I_{\max}\}, \qquad |\mathcal{S}| = 11,
+\end{equation}
+and volatility is held constant at $\sigma_t = \sigma_{\mathrm{base}} = 0.2$. This is the most tractable setting: DP solves a $11 \times 9$ table exactly in seconds. Transition probabilities follow directly from the Bernoulli fill model.
+
+The Bellman equation is:
+\begin{equation}
+    V(I) = \max_{(\delta^b, \delta^a)} \sum_{I'} P(I' \mid I, \delta^b, \delta^a)\bigl[r(I, \delta^b, \delta^a, I') + \gamma\,V(I')\bigr].
+\end{equation}
+For the DQN, the state is a one-hot vector of length 11. To isolate the policy learning problem from the price noise, training uses $\sigma = 0$ (deterministic price moves only from adverse selection), while evaluation uses the full stochastic environment.
+
+\subsection{Results}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{exp1_comparison.png}
+\caption{Experiment 1: DP vs.\ DQN on the inventory-only model. Top row: optimal bid and ask spread policies as a function of inventory; reward distribution over 1000 evaluation episodes. Bottom row: cumulative MtM PnL; final inventory distribution.}
+\label{fig:exp1}
+\end{figure}
+
+Figure~\ref{fig:exp1} shows that both DP and DQN recover the same qualitative policy: when inventory is high ($I > 0$), the agent widens the bid spread and tightens the ask spread to encourage selling; when inventory is low ($I < 0$), the opposite holds. This inventory-mean-reverting behaviour is the hallmark of optimal market making. Both methods achieve similar average PnL over 1000 evaluation episodes, confirming that DQN successfully learns the inventory-hedging policy in this simple setting.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{phase2_dp_analysis.png}
+\caption{Phase 2 DP solution: value function $V(I)$, optimal policy $\pi^*(I)$ (bid and ask half-spreads), Bellman residual convergence, and policy skew $(\delta^{\mathrm{bid}*} - \delta^{\mathrm{ask}*})$ as a function of inventory for several values of $\alpha$.}
+\label{fig:phase2_dp}
+\end{figure}
+
+Figure~\ref{fig:phase2_dp} provides a detailed view of the DP solution. The value function is concave and symmetric around $I = 0$, reflecting the symmetric penalty structure. The skew $(\delta^b - \delta^a)$ is negative when $I > 0$ (lower bid, higher ask relative to each other) and positive when $I < 0$, with a magnitude that grows with the inventory penalty $\alpha$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{phase2_arrival_sensitivity.png}
+\caption{Sensitivity of the optimal DP policy to the arrival rate parameter $A$. Higher $A$ means more order flow per unit spread, allowing tighter quotes.}
+\label{fig:phase2_arrival}
+\end{figure}
+
+Figure~\ref{fig:phase2_arrival} shows that the arrival rate $A$ has a direct effect on optimal spread width: higher arrival rates justify tighter spreads because the inventory can be rebalanced more quickly.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiment 2: (Inventory, Price) State}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Formulation}
+
+Experiment 2 extends the state with the mid-price deviation from the initial price:
+\begin{equation}
+    s_t = (I_t,\; S_t) \in \{-I_{\max}, \ldots, I_{\max}\} \times \mathcal{G}_S,
+\end{equation}
+where $\mathcal{G}_S$ is a uniform grid of 21 price bins over $[-10, 10]$. The combined state space has $11 \times 21 = 231$ states. Volatility remains constant at $\sigma_{\mathrm{base}}$.
+
+DP solves the 2-D Bellman equation by value iteration. Price transitions are computed from the Gaussian price-move model truncated to the grid. For the DQN, the observation is a one-hot encoding of both inventory and price bin (state dimension 32).
+
+\textbf{Key difference from Phase 2}: to make DP tractable, the price must be discretized. RL can in principle work with continuous price natively. This discretization requirement becomes a limitation as state dimensions grow.
+
+\subsection{Results}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{exp2_comparison.png}
+\caption{Experiment 2: DP vs.\ DQN on the (inventory, price) model. Bid and ask spreads at the mid-price bin; reward distribution; cumulative PnL; final inventory distribution.}
+\label{fig:exp2}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{exp2_policy_heatmap.png}
+\caption{Experiment 2 policy heatmaps: optimal bid and ask half-spreads over the (inventory, price) grid for both DP and DQN.}
+\label{fig:exp2_heatmap}
+\end{figure}
+
+Figures~\ref{fig:exp2} and~\ref{fig:exp2_heatmap} reveal a new effect absent in Experiment 1: the optimal spread depends on the price level. Since order arrival rates and price moves are proportional to the current price, lower price levels lead to smaller absolute spreads. The DP captures this exactly via the 2-D value function. The DQN matches the qualitative structure of the DP policy heatmap, though with some smoothing due to function approximation.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experiment 3: (Inventory, Price, Volatility) State}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Formulation}
+
+Experiment 3 adds stochastic volatility to the state:
+\begin{equation}
+    s_t = (I_t,\; S_t,\; \sigma_t) \in \{-I_{\max}, \ldots, I_{\max}\} \times \mathcal{G}_S \times \mathcal{G}_\sigma.
+\end{equation}
+Volatility follows a discretized Ornstein--Uhlenbeck (OU) process:
+\begin{equation}
+    \Delta\sigma_t = \kappa(\bar\sigma - \sigma_t) + \xi\,\varepsilon_t^v, \qquad \varepsilon_t^v \sim \mathcal{N}(0,1),
+\end{equation}
+with mean reversion $\kappa = 0.15$, long-run mean $\bar\sigma = 1.0$, and vol-of-vol $\xi = 0.2$, floored at $\sigma_t \geq 0.1$. The volatility grid $\mathcal{G}_\sigma$ has 9 bins over $[0.3, 2.0]$, and the price grid has 15 bins over $[-10, 10]$.
+
+The joint state space has $11 \times 15 \times 9 = 1{,}485$ states. DP via 3-D value iteration is still tractable but computationally expensive, and adding a fourth dimension (e.g.\ regime or order-flow intensity) would make it effectively intractable. The DQN uses a one-hot encoding of all three dimensions (state dimension 35).
+
+\subsection{Results}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{phase3_comparison.png}
+\caption{Experiment 3: DP vs.\ DQN on the (inventory, price, volatility) model. Policy slice at $S = 0$, $\sigma = \bar\sigma$; reward distribution; cumulative PnL; final inventory distribution.}
+\label{fig:exp3}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{phase3_policy_heatmap.png}
+\caption{Experiment 3 policy heatmaps: optimal bid and ask half-spreads over the (inventory, volatility) grid at $S = 0$.}
+\label{fig:exp3_heatmap}
+\end{figure}
+
+Figures~\ref{fig:exp3} and~\ref{fig:exp3_heatmap} show the key new result: volatility has a direct effect on the optimal spread. When $\sigma_t$ is high, both DP and DQN widen their spreads to compensate for larger inventory risk. The policy heatmaps confirm the interaction: at high inventory and high volatility the ask spread widens more aggressively than at low volatility. The DQN qualitatively matches the DP policy, though learning is harder due to the low signal-to-noise ratio: the noisy inventory P\&L term $I_t \sigma_t \varepsilon_t$ can easily swamp the spread signal, making it difficult for the agent to differentiate between actions.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Continuous State-Action Space (Full Phase 3)}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The experiments above discretize price and volatility to maintain DP tractability. The full Phase 3 goal is a continuous state space $(I_t, S_t, \sigma_t) \in \mathbb{Z} \times \mathbb{R} \times \mathbb{R}_+$ with a continuous or finer action space. DP is no longer feasible here due to the curse of dimensionality.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{continuous-price-inventory.png}
+\caption{Continuous-state Phase 3: price and inventory trajectory from a trained DQN in the continuous environment.}
+\label{fig:continuous}
+\end{figure}
+
+Figure~\ref{fig:continuous} shows a trajectory from a DQN trained in the continuous environment, demonstrating the inventory-mean-reverting behaviour persists in the fully continuous setting. In this regime, the DP baseline is no longer available, and RL is the primary method.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{The Low SNR Challenge}
+
+A recurring finding across all experiments is that the noisy price component $I_t \sigma_t \varepsilon_t$ in the reward creates a low signal-to-noise ratio for the RL agent. Because Q-values for different actions are close in absolute value relative to the noise magnitude, the agent struggles to distinguish between policies. This is reflected in PnL distributions: suboptimal policies often achieve nearly the same average return as the optimal one. Careful reward shaping---or decoupling the training reward from the noisy evaluation metric---is critical for DQN convergence.
+
+\subsection{DP vs.\ RL: When Does Each Apply?}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+& \textbf{State} & \textbf{$|\mathcal{S}|$} & \textbf{DP tractable?} & \textbf{RL needed?} \\
+\midrule
+Experiment 1 & $I$               & 11       & Yes (trivial)  & Optional \\
+Experiment 2 & $(I, S)$          & 231      & Yes            & Optional \\
+Experiment 3 & $(I, S, \sigma)$  & 1{,}485  & Yes (slow)     & Preferred \\
+Continuous   & $(I, S, \sigma)$ continuous & $\infty$ & No & Required \\
+\bottomrule
+\end{tabular}
+\caption{Tractability of DP and RL across experiments.}
+\end{table}
+
+DP is exact, interpretable, and fast when the state space is small and the transition model is known. As the state space grows---by adding price, volatility, or moving to continuous spaces---DP becomes infeasible and model-free RL is the natural alternative.
+
+\subsection{Optimal Policy Structure}
+
+Across all experiments, the optimal policy shares a consistent qualitative structure:
+\begin{itemize}
+    \item \textbf{Inventory skew}: high inventory $\Rightarrow$ tight ask (incentivise selling), wide bid; low inventory $\Rightarrow$ tight bid, wide ask.
+    \item \textbf{Price effect}: lower price levels justify tighter absolute spreads.
+    \item \textbf{Volatility conservatism}: higher $\sigma_t$ leads to wider spreads to hedge against adverse price moves while holding inventory.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+This project implements a progression of market-making MDPs from the simple Phase 2 inventory-only model to the full Phase 3 continuous environment. The three discrete experiments demonstrate how DP and DQN compare as problem complexity grows. In all cases, both methods recover the intuitive inventory-hedging policy. DP is exact and fast for small state spaces but fails as dimensionality increases; DQN scales more gracefully but is sensitive to the low signal-to-noise ratio inherent in market-making rewards. The continuous Phase 3 experiment shows that RL remains effective even when DP is infeasible, at the cost of longer training and more careful reward design.
+
+\end{document}
