@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 
 from market_making import MarketParams, MarketMakingEnv, DQNAgent
 from market_making.dp_solver import value_iteration_3d, simulate_dp_policy_3d
+from market_making.gpu_config import gpu_batch_size, gpu_hidden_dim, gpu_info
 
 # Real-world: larger action space
 SPREAD_OPTIONS = (0.5, 1.0, 1.5, 2.0, 2.5)
@@ -52,7 +53,11 @@ def main():
     print(f"  Actions     : {params.n_actions}  spreads={SPREAD_OPTIONS}")
     print(f"  Price bins  : {N_PRICE_BINS}  Vol bins: {N_VOL_BINS}")
     print(f"  Volatility  : OU process (stochastic, real-world)")
+    print(f"  Device      : {gpu_info()}")
     print()
+
+    BATCH_TRAIN = gpu_batch_size(256)
+    HIDDEN_TRAIN = gpu_hidden_dim(256)
 
     timings = {}
 
@@ -96,8 +101,8 @@ def main():
         n_actions=train_env_reg.n_actions,
         lr=2e-4,
         gamma=train_params.discount,
-        batch_size=256,
-        hidden_dim=256,
+        batch_size=BATCH_TRAIN,
+        hidden_dim=HIDDEN_TRAIN,
         learning_starts=RL_LEARNING_STARTS,
         tau=0.005,
         seed=SEED,
@@ -131,8 +136,8 @@ def main():
         n_actions=train_env_disc.n_actions,
         lr=2e-4,
         gamma=train_params.discount,
-        batch_size=256,
-        hidden_dim=256,
+        batch_size=BATCH_TRAIN,
+        hidden_dim=HIDDEN_TRAIN,
         learning_starts=RL_LEARNING_STARTS,
         tau=0.005,
         seed=SEED,

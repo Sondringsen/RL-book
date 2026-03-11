@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 
 from market_making import MarketParams, MarketMakingEnv, DQNAgent
 from market_making.dp_solver import value_iteration_2d, simulate_dp_policy_2d
+from market_making.gpu_config import gpu_batch_size, gpu_hidden_dim, gpu_info
 
 # Larger action space: 5 spread options → 25 (δ_bid, δ_ask) pairs
 SPREAD_OPTIONS = (0.5, 1.0, 1.5, 2.0, 2.5)
@@ -35,6 +36,12 @@ def main():
     print(f"  Actions     : {params.n_actions}  spreads={SPREAD_OPTIONS}")
     print(f"  Price bins  : {N_PRICE_BINS}  range=[{-PRICE_HALF_RANGE}, {PRICE_HALF_RANGE}]")
     print(f"  Volatility  : constant σ = {params.sigma_base}")
+    print(f"  Device      : {gpu_info()}")
+
+    BATCH_TRAIN = gpu_batch_size(256)
+    BATCH_DISTILL = gpu_batch_size(128)
+    HIDDEN_TRAIN = gpu_hidden_dim(256)
+    HIDDEN_DISTILL = gpu_hidden_dim(128)
 
     timings = {}  # method -> seconds
 
@@ -62,7 +69,7 @@ def main():
     )
     agent_reg = DQNAgent(
         state_dim=train_env_reg.state_dim, n_actions=train_env_reg.n_actions,
-        lr=2e-4, gamma=train_params.discount, batch_size=256, hidden_dim=256,
+        lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
         use_prioritized_replay=True, rare_priority=3.0,
     )
@@ -83,7 +90,7 @@ def main():
     )
     agent_disc = DQNAgent(
         state_dim=train_env_disc.state_dim, n_actions=train_env_disc.n_actions,
-        lr=2e-4, gamma=train_params.discount, batch_size=256, hidden_dim=256,
+        lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
         use_prioritized_replay=True, rare_priority=3.0,
     )
@@ -104,11 +111,11 @@ def main():
     )
     agent_dist = DQNAgent(
         state_dim=env_obs.state_dim, n_actions=env_obs.n_actions,
-        lr=1e-3, gamma=params.discount, batch_size=128, hidden_dim=128, seed=SEED,
+        lr=1e-3, gamma=params.discount, batch_size=BATCH_DISTILL, hidden_dim=HIDDEN_DISTILL, seed=SEED,
     )
     agent_dist.train_distillation(
         env_obs, policy_dp, params, price_grid=price_grid,
-        n_epochs=500, batch_size=128, verbose=True, log_interval=50,
+        n_epochs=500, batch_size=BATCH_DISTILL, verbose=True, log_interval=50,
     )
     timings["RL (distillation)"] = time.perf_counter() - t0
     print(f"  RL (distillation) trained in {timings['RL (distillation)']:.1f} s")
