@@ -109,10 +109,12 @@ class MarketMakingEnv:
         self.spread_history = []
         return self._get_obs()
 
-    def set_state(self, inventory: int, price_dev: float) -> np.ndarray:
-        """Set (inventory, price) without resetting step_count. For mid-episode teleport."""
+    def set_state(self, inventory: int, price_dev: float = 0.0, vol: float = None) -> np.ndarray:
+        """Set (inventory, price [, vol]) without resetting step_count. For mid-episode teleport."""
         self.inventory = inventory
         self.mid_price = self.params.initial_price + price_dev
+        if vol is not None:
+            self.volatility = vol
         self.cash = -self.inventory * self.mid_price
         self.pnl_history = [0.0]
         self.inventory_history = [self.inventory]
@@ -181,8 +183,11 @@ class MarketMakingEnv:
         price_dev = self.mid_price - self.params.initial_price
         if self.use_continuous_state:
             inv_norm = np.array([self.inventory / self.params.max_inventory], dtype=np.float32)
-            price_norm = np.array([price_dev / self.price_scale], dtype=np.float32)
-            parts = [inv_norm, price_norm]
+            if self.include_price:
+                price_norm = np.array([price_dev / self.price_scale], dtype=np.float32)
+                parts = [inv_norm, price_norm]
+            else:
+                parts = [inv_norm]
         elif self.discrete_inventory:
             inv_onehot = np.zeros(self.params.n_inventory_states, dtype=np.float32)
             inv_onehot[self.params.inventory_to_index(self.inventory)] = 1.0
@@ -212,8 +217,11 @@ class MarketMakingEnv:
         """Build observation for a given (I, price_dev, vol) — for policy plotting."""
         if self.use_continuous_state:
             inv_norm = np.array([inventory / self.params.max_inventory], dtype=np.float32)
-            price_norm = np.array([price_dev / self.price_scale], dtype=np.float32)
-            parts = [inv_norm, price_norm]
+            if self.include_price:
+                price_norm = np.array([price_dev / self.price_scale], dtype=np.float32)
+                parts = [inv_norm, price_norm]
+            else:
+                parts = [inv_norm]
         elif self.discrete_inventory:
             inv_onehot = np.zeros(self.params.n_inventory_states, dtype=np.float32)
             inv_onehot[self.params.inventory_to_index(inventory)] = 1.0
@@ -243,7 +251,7 @@ class MarketMakingEnv:
     @property
     def state_dim(self) -> int:
         if self.use_continuous_state:
-            dim = 2  # inv_norm, price_norm
+            dim = 2 if self.include_price else 1  # inv_norm [, price_norm]
         else:
             dim = self.params.n_inventory_states if self.discrete_inventory else 1
             if self.include_price:

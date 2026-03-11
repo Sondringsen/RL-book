@@ -41,7 +41,8 @@ import matplotlib.pyplot as plt
 from market_making import MarketParams, MarketMakingEnv, DQNAgent
 from market_making.dp_solver import value_iteration_2d, simulate_dp_policy_2d
 
-SPREAD_OPTIONS = (0.5, 1.0, 1.5)
+# Larger action space: 5×5 = 25 spread combinations
+SPREAD_OPTIONS = (0.5, 1.0, 1.5, 2.0, 2.5)
 N_PRICE_BINS = 21
 PRICE_HALF_RANGE = 10.0
 PRICE_SCALE = PRICE_HALF_RANGE

@@ -365,7 +365,8 @@ class DQNAgent:
         env,
         policy_teacher: np.ndarray,
         params,
-        price_grid: np.ndarray,
+        price_grid: np.ndarray = None,
+        vol_grid: np.ndarray = None,
         n_epochs: int = 500,
         batch_size: int = 128,
         lr: float = None,
@@ -374,7 +375,7 @@ class DQNAgent:
     ):
         """Train DQN to mimic a teacher policy (e.g. from DP) via supervised learning.
 
-        policy_teacher: shape (n_inventory_states, n_price_bins), action indices.
+        policy_teacher: 1D (n_inv), 2D (n_inv, n_price), or 3D (n_inv, n_price, n_vol).
         Samples (s, a*) uniformly from the grid and minimizes cross-entropy.
         """
         if lr is not None:
@@ -382,23 +383,46 @@ class DQNAgent:
                 g["lr"] = lr
 
         n_inv = params.n_inventory_states
-        n_price = len(price_grid)
-        n_states = n_inv * n_price
+        ndim = policy_teacher.ndim
 
         # Build full dataset: (obs, teacher_action) for every state
         dataset_states = []
         dataset_actions = []
-        for si in range(n_inv):
-            inv = params.index_to_inventory(si)
-            for sp in range(n_price):
-                price_dev = float(price_grid[sp])
-                obs = env.obs_for_state(inv, price_dev=price_dev)
-                a_star = int(policy_teacher[si, sp])
+
+        if ndim == 1:
+            for si in range(n_inv):
+                inv = params.index_to_inventory(si)
+                obs = env.obs_for_state(inv, price_dev=0.0)
+                a_star = int(policy_teacher[si])
                 dataset_states.append(obs)
                 dataset_actions.append(a_star)
+        elif ndim == 2:
+            n_price = len(price_grid)
+            for si in range(n_inv):
+                inv = params.index_to_inventory(si)
+                for sp in range(n_price):
+                    price_dev = float(price_grid[sp])
+                    obs = env.obs_for_state(inv, price_dev=price_dev)
+                    a_star = int(policy_teacher[si, sp])
+                    dataset_states.append(obs)
+                    dataset_actions.append(a_star)
+        else:  # ndim == 3
+            n_price = len(price_grid)
+            n_vol = len(vol_grid)
+            for si in range(n_inv):
+                inv = params.index_to_inventory(si)
+                for sp in range(n_price):
+                    for sv in range(n_vol):
+                        price_dev = float(price_grid[sp])
+                        vol = float(vol_grid[sv])
+                        obs = env.obs_for_state(inv, price_dev=price_dev, vol=vol)
+                        a_star = int(policy_teacher[si, sp, sv])
+                        dataset_states.append(obs)
+                        dataset_actions.append(a_star)
 
         dataset_states = np.array(dataset_states, dtype=np.float32)
         dataset_actions = np.array(dataset_actions, dtype=np.int64)
+        n_states = len(dataset_actions)
 
         losses = []
         for epoch in range(n_epochs):
