@@ -26,7 +26,6 @@ from .params import MarketParams
 def _gaussian_transition_matrix(grid, shift, sigma):
     """P(land in bin k | start at bin j) for  X' = grid[j] + shift + sigma*N(0,1)."""
     n = len(grid)
-    dp = grid[1] - grid[0]
     T = np.zeros((n, n))
     for j in range(n):
         mu = grid[j] + shift
@@ -79,24 +78,24 @@ def value_iteration(
                 at_upper = I >= I_max
                 at_lower = I <= -I_max
 
-                if at_upper and at_lower:               # both sides blocked (this never happens)
+                if at_upper and at_lower:
                     q = -alpha * I**2 + gamma * V[s]
 
-                elif at_upper:                           # bid blocked
+                elif at_upper:
                     s_ask = params.inventory_to_index(I - 1)
                     r_ask  = d_ask + (I - 1) * adv - alpha * (I - 1)**2
                     r_none = -alpha * I**2
                     q = (p_a     * (r_ask  + gamma * V[s_ask])
                          + (1 - p_a) * (r_none + gamma * V[s]))
 
-                elif at_lower:                           # ask blocked
+                elif at_lower:
                     s_bid = params.inventory_to_index(I + 1)
                     r_bid  = d_bid - (I + 1) * adv - alpha * (I + 1)**2
                     r_none = -alpha * I**2
                     q = (p_b     * (r_bid  + gamma * V[s_bid])
                          + (1 - p_b) * (r_none + gamma * V[s]))
 
-                else:                                    # both sides active
+                else:
                     s_bid = params.inventory_to_index(I + 1)
                     s_ask = params.inventory_to_index(I - 1)
 
@@ -138,8 +137,7 @@ def simulate_dp_policy(
     n_episodes: int = 1000,
     episode_seed_base: int = None,
 ):
-    """Roll out the DP policy in any MarketMakingEnv.
-    If episode_seed_base is set, each episode i uses seed=episode_seed_base+i for identical trajectories."""
+    """Roll out the DP policy in any MarketMakingEnv."""
     episode_rewards = []
     episode_pnls = []
     final_inventories = []
@@ -290,7 +288,6 @@ def value_iteration_2d(
 
 
 def simulate_dp_policy_2d(env, policy, params, price_grid, n_episodes=1000, episode_seed_base=None):
-    """If episode_seed_base is set, each episode i uses seed=episode_seed_base+i for identical trajectories."""
     episode_rewards, episode_pnls, final_inventories = [], [], []
     all_inventories: list[int] = []
 
@@ -340,7 +337,6 @@ def value_iteration_3d(
     price_grid = np.linspace(-price_half_range, price_half_range, n_price_bins)
     vol_grid = np.linspace(vol_lo, vol_hi, n_vol_bins)
 
-    # Volatility transition: sigma' = sigma + kappa*(theta - sigma) + xi*N(0,1)
     kappa = params.vol_mean_reversion
     theta = params.vol_long_run_mean
     xi = params.vol_of_vol
@@ -348,11 +344,9 @@ def value_iteration_3d(
     for v in range(n_vol_bins):
         mu_v = vol_grid[v] + kappa * (theta - vol_grid[v])
         T_vol[v] = _gaussian_transition_matrix(vol_grid, mu_v - vol_grid[v], xi)[v]
-    # Rows already sum to ~1 due to boundary bins absorbing tails.
 
-    # Price transitions per (vol_level, adverse_shift)
     shifts = sorted({-adv, 0.0, adv})
-    T_price = {}  # (vol_idx, shift) -> (n_price, n_price)
+    T_price = {}
     exp_dp = {}
     for vi in range(n_vol_bins):
         sig = vol_grid[vi]
@@ -368,7 +362,6 @@ def value_iteration_3d(
     for it in range(max_iter):
         V_new = np.full_like(V, -np.inf)
 
-        # EV_vol[si, p, v] = sum_w T_vol[v, w] * V[si, p, w]  — contract vol dim
         EV_vol = np.einsum("ipw,vw->ipv", V, T_vol)
 
         for si in range(n_inv):
@@ -433,7 +426,6 @@ def value_iteration_3d(
 
 
 def simulate_dp_policy_3d(env, policy, params, price_grid, vol_grid, n_episodes=1000, episode_seed_base=None):
-    """If episode_seed_base is set, each episode i uses seed=episode_seed_base+i for identical trajectories."""
     episode_rewards, episode_pnls, final_inventories = [], [], []
     all_inventories: list[int] = []
 

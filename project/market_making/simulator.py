@@ -19,6 +19,7 @@ Step logic
 """
 
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 
 from .params import MarketParams
 
@@ -38,6 +39,10 @@ class MarketMakingEnv:
         vol_grid: np.ndarray = None,
         # Randomize initial (I, price, vol) for uniform state coverage during training
         random_init: bool = False,
+        # Smoother encoding: [inv/max_inv, price_dev/scale] instead of one-hot for better generalization
+        use_continuous_state: bool = False,
+        # Order flow imbalance: stochastic state DP cannot model (unknown transition)
+        use_order_flow: bool = False,
     ):
         self.params = params
         self.use_vol = use_volatility_dynamics
@@ -47,12 +52,15 @@ class MarketMakingEnv:
         self.price_grid = np.asarray(price_grid) if price_grid is not None else None
         self.vol_grid = np.asarray(vol_grid) if vol_grid is not None else None
         self.random_init = random_init
+        self.use_continuous_state = use_continuous_state
+        self.use_order_flow = use_order_flow
         self.rng = np.random.RandomState(seed)
 
         self.mid_price: float = params.initial_price
         self.inventory: int = 0
         self.cash: float = 0.0
         self.volatility: float = params.sigma_base
+        self.order_flow: float = 0.0  # [-1, 1], stochastic, DP has no model for this
         self.step_count: int = 0
 
         self.pnl_history: list[float] = []
@@ -74,8 +82,15 @@ class MarketMakingEnv:
         if seed is not None:
             self.rng = np.random.RandomState(seed)
 
-        if self.random_init:
-            # Always randomize inventory for full state coverage during training
+        if inventory is not None or price_dev is not None or vol is not None:
+            # Explicit state override (takes precedence over random_init)
+            self.inventory = inventory if inventory is not None else 0
+            self.mid_price = (
+                self.params.initial_price + (price_dev if price_dev is not None else 0.0)
+            )
+            self.volatility = vol if vol is not None else self.params.sigma_base
+        elif self.random_init:
+            # Randomize for full state coverage during training
             inv_idx = self.rng.randint(0, self.params.n_inventory_states)
             self.inventory = self.params.index_to_inventory(inv_idx)
             if self.price_grid is not None:
@@ -86,20 +101,29 @@ class MarketMakingEnv:
                 self.volatility = self.vol_grid[vol_idx]
             else:
                 self.volatility = self.params.sigma_base
-        elif inventory is not None or price_dev is not None or vol is not None:
-            self.inventory = inventory if inventory is not None else 0
-            self.mid_price = (
-                self.params.initial_price + (price_dev if price_dev is not None else 0.0)
-            )
-            self.volatility = vol if vol is not None else self.params.sigma_base
         else:
             self.mid_price = self.params.initial_price
             self.inventory = 0
             self.volatility = self.params.sigma_base
 
+        if self.use_order_flow:
+            self.order_flow = 2.0 * self.rng.random() - 1.0
+
         # Cash = -inventory * mid_price so initial MtM = 0 (consistent with DP)
         self.cash = -self.inventory * self.mid_price
         self.step_count = 0
+        self.pnl_history = [0.0]
+        self.inventory_history = [self.inventory]
+        self.spread_history = []
+        return self._get_obs()
+
+    def set_state(self, inventory: int, price_dev: float = 0.0, vol: float = None) -> np.ndarray:
+        """Set (inventory, price [, vol]) without resetting step_count. For mid-episode teleport."""
+        self.inventory = inventory
+        self.mid_price = self.params.initial_price + price_dev
+        if vol is not None:
+            self.volatility = vol
+        self.cash = -self.inventory * self.mid_price
         self.pnl_history = [0.0]
         self.inventory_history = [self.inventory]
         self.spread_history = []
@@ -133,6 +157,12 @@ class MarketMakingEnv:
                   + p.vol_of_vol * self.rng.randn())
             self.volatility = max(0.1, self.volatility + dv)
 
+        # ── order flow (unknown to DP: no transition model) ───────────
+        if self.use_order_flow:
+            self.order_flow = np.clip(
+                0.9 * self.order_flow + 0.3 * self.rng.randn(), -1.0, 1.0
+            )
+
         # ── price move with adverse selection ────────────────────────
         adverse = p.adverse_selection * (int(ask_fill) - int(bid_fill))
         dp = adverse + self.volatility * self.rng.randn()
@@ -164,22 +194,29 @@ class MarketMakingEnv:
     # ── helpers ──────────────────────────────────────────────────────
 
     def _get_obs(self) -> np.ndarray:
-        if self.discrete_inventory:
+        price_dev = self.mid_price - self.params.initial_price
+        if self.use_continuous_state:
+            inv_norm = np.array([self.inventory / self.params.max_inventory], dtype=np.float32)
+            if self.include_price:
+                price_norm = np.array([price_dev / self.price_scale], dtype=np.float32)
+                parts = [inv_norm, price_norm]
+            else:
+                parts = [inv_norm]
+        elif self.discrete_inventory:
             inv_onehot = np.zeros(self.params.n_inventory_states, dtype=np.float32)
             inv_onehot[self.params.inventory_to_index(self.inventory)] = 1.0
             parts = [inv_onehot]
         else:
             parts = [np.array([self.inventory / self.params.max_inventory], dtype=np.float32)]
 
-        if self.include_price:
+        if self.include_price and not self.use_continuous_state:
             if self.price_grid is not None:
-                price_dev = self.mid_price - self.params.initial_price
                 idx = int(np.clip(np.argmin(np.abs(self.price_grid - price_dev)), 0, len(self.price_grid) - 1))
                 ph = np.zeros(len(self.price_grid), dtype=np.float32)
                 ph[idx] = 1.0
                 parts.append(ph)
             else:
-                parts.append(np.array([(self.mid_price - self.params.initial_price) / self.price_scale], dtype=np.float32))
+                parts.append(np.array([price_dev / self.price_scale], dtype=np.float32))
         if self.use_vol:
             if self.vol_grid is not None:
                 idx = int(np.clip(np.argmin(np.abs(self.vol_grid - self.volatility)), 0, len(self.vol_grid) - 1))
@@ -188,18 +225,27 @@ class MarketMakingEnv:
                 parts.append(vh)
             else:
                 parts.append(np.array([self.volatility / self.params.vol_long_run_mean], dtype=np.float32))
+        if self.use_order_flow:
+            parts.append(np.array([self.order_flow], dtype=np.float32))
         return np.concatenate(parts)
 
-    def obs_for_state(self, inventory: int, price_dev: float = 0.0, vol: float = None) -> np.ndarray:
+    def obs_for_state(self, inventory: int, price_dev: float = 0.0, vol: float = None, order_flow: float = 0.0) -> np.ndarray:
         """Build observation for a given (I, price_dev, vol) — for policy plotting."""
-        if self.discrete_inventory:
+        if self.use_continuous_state:
+            inv_norm = np.array([inventory / self.params.max_inventory], dtype=np.float32)
+            if self.include_price:
+                price_norm = np.array([price_dev / self.price_scale], dtype=np.float32)
+                parts = [inv_norm, price_norm]
+            else:
+                parts = [inv_norm]
+        elif self.discrete_inventory:
             inv_onehot = np.zeros(self.params.n_inventory_states, dtype=np.float32)
             inv_onehot[self.params.inventory_to_index(inventory)] = 1.0
             parts = [inv_onehot]
         else:
             parts = [np.array([inventory / self.params.max_inventory], dtype=np.float32)]
 
-        if self.include_price:
+        if self.include_price and not self.use_continuous_state:
             if self.price_grid is not None:
                 idx = int(np.clip(np.argmin(np.abs(self.price_grid - price_dev)), 0, len(self.price_grid) - 1))
                 ph = np.zeros(len(self.price_grid), dtype=np.float32)
@@ -216,17 +262,85 @@ class MarketMakingEnv:
                 parts.append(vh)
             else:
                 parts.append(np.array([v / self.params.vol_long_run_mean], dtype=np.float32))
+        if self.use_order_flow:
+            parts.append(np.array([order_flow], dtype=np.float32))
         return np.concatenate(parts)
 
     @property
     def state_dim(self) -> int:
-        dim = self.params.n_inventory_states if self.discrete_inventory else 1
-        if self.include_price:
-            dim += len(self.price_grid) if self.price_grid is not None else 1
+        if self.use_continuous_state:
+            dim = 2 if self.include_price else 1  # inv_norm [, price_norm]
+        else:
+            dim = self.params.n_inventory_states if self.discrete_inventory else 1
+            if self.include_price:
+                dim += len(self.price_grid) if self.price_grid is not None else 1
         if self.use_vol:
             dim += len(self.vol_grid) if self.vol_grid is not None else 1
+        if self.use_order_flow:
+            dim += 1
         return dim
 
     @property
     def n_actions(self) -> int:
         return self.params.n_actions
+
+
+class VecMarketMakingEnv:
+    """Vectorized env: N envs stepped in parallel. Saturates GPU by collecting
+    N transitions per step and batching action selection."""
+
+    def __init__(self, n_envs: int, env_fn, max_workers: int = None):
+        """env_fn is a callable that returns a fresh MarketMakingEnv."""
+        self.n_envs = n_envs
+        self.env_fn = env_fn
+        self.max_workers = max_workers or min(n_envs, 32)
+        self.envs = [env_fn() for _ in range(n_envs)]
+        self._pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        # Align seeds so each env gets different stream
+        for i, e in enumerate(self.envs):
+            e.rng = np.random.RandomState(42 + i * 10007)
+
+    def reset(self) -> np.ndarray:
+        """Reset all envs, return (n_envs, state_dim)."""
+        obs_list = [e.reset() for e in self.envs]
+        return np.stack(obs_list, axis=0).astype(np.float32)
+
+    def step(self, actions: np.ndarray):
+        """Step all envs in parallel. actions: (n_envs,). Returns batched."""
+        def _step(i):
+            obs, r, d, info = self.envs[i].step(int(actions[i]))
+            return obs, r, d, info
+
+        futures = [self._pool.submit(_step, i) for i in range(self.n_envs)]
+        results = [f.result() for f in futures]
+
+        obs = np.stack([r[0] for r in results], axis=0).astype(np.float32)
+        rewards = np.array([r[1] for r in results], dtype=np.float32)
+        dones = np.array([r[2] for r in results], dtype=np.float32)
+
+        # Reset done envs
+        for i, d in enumerate(dones):
+            if d:
+                self.envs[i].reset()
+
+        return obs, rewards, dones, results
+
+    @property
+    def state_dim(self) -> int:
+        return self.envs[0].state_dim
+
+    @property
+    def n_actions(self) -> int:
+        return self.envs[0].n_actions
+
+    @property
+    def params(self):
+        return self.envs[0].params
+
+    @property
+    def price_grid(self):
+        return getattr(self.envs[0], "price_grid", None)
+
+    @property
+    def price_scale(self) -> float:
+        return getattr(self.envs[0], "price_scale", 10.0)

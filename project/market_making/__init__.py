@@ -1,5 +1,5 @@
 from .params import MarketParams
-from .simulator import MarketMakingEnv
+from .simulator import MarketMakingEnv, VecMarketMakingEnv
 from .dp_solver import (
     value_iteration,
     simulate_dp_policy,
@@ -14,4 +14,7 @@ def __getattr__(name):
     if name == "DQNAgent":
         from .dqn_agent import DQNAgent
         return DQNAgent
+    if name == "TabularQAgent":
+        from .tabular_q import TabularQAgent
+        return TabularQAgent
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

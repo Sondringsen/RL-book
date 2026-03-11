@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
-"""Experiment 3 — State = (inventory, price, volatility), limited actions.
+"""Experiment 3 — State = (inventory, price, volatility), OU vol dynamics.
 
-State : (I, S, σ)  with σ following an OU process
-Action: (δ_bid, δ_ask) from a small spread grid
-Vol   : stochastic (Ornstein–Uhlenbeck)
-
-Compares DP (3-D value iteration) vs RL (DQN) side by side.
+Compares DP vs RL (regular/continuous) vs RL (distillation).
 """
 
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from market_making import MarketParams, MarketMakingEnv, DQNAgent
+from market_making import MarketParams, MarketMakingEnv, VecMarketMakingEnv, DQNAgent
 from market_making.dp_solver import value_iteration_3d, simulate_dp_policy_3d
+from market_making.gpu_config import gpu_batch_size, gpu_hidden_dim, gpu_info
 
 SPREAD_OPTIONS = (0.5, 1.0, 1.5)
 N_PRICE_BINS = 15
-PRICE_HALF_RANGE = 10.0
-PRICE_SCALE = PRICE_HALF_RANGE
 N_VOL_BINS = 9
+PRICE_HALF_RANGE = 10.0
 VOL_LO, VOL_HI = 0.3, 2.0
+PRICE_SCALE = PRICE_HALF_RANGE
 SEED = 42
-EVAL_SEED = 123  # Same seed for DP/RL → identical trajectories, same problem
+EVAL_SEED = 123
 
 
 def main():
@@ -31,209 +28,255 @@ def main():
     inventories = params.inventory_states
 
     print("=" * 60)
-    print("Experiment 3: (Inventory, Price, Vol) state, DP vs RL")
+    print("Experiment 3: (Inventory, Price, Vol) — DP vs RL (regular, distillation)")
     print("=" * 60)
     print(f"  State dim   : 3 (inventory, price, volatility)")
     print(f"  Actions     : {params.n_actions}  spreads={SPREAD_OPTIONS}")
-    print(f"  Price bins  : {N_PRICE_BINS}  range=[{-PRICE_HALF_RANGE}, {PRICE_HALF_RANGE}]")
-    print(f"  Vol bins    : {N_VOL_BINS}  range=[{VOL_LO}, {VOL_HI}]")
-    print(f"  Vol dynamics: OU  κ={params.vol_mean_reversion}  "
-          f"θ={params.vol_long_run_mean}  ξ={params.vol_of_vol}")
+    print(f"  Price bins  : {N_PRICE_BINS}  Vol bins: {N_VOL_BINS}")
+    print(f"  Volatility  : OU process")
+    print(f"  Device      : {gpu_info()}")
+
+    BATCH_TRAIN = gpu_batch_size(256)
+    BATCH_DISTILL = gpu_batch_size(128)
+    HIDDEN_TRAIN = gpu_hidden_dim(256)
+    HIDDEN_DISTILL = gpu_hidden_dim(128)
 
     # ── DP ────────────────────────────────────────────────────────────
-    print("\n[1/4] DP 3-D value iteration …")
+    print("\n[1/5] DP 3-D value iteration …")
     V_dp, policy_dp, residuals, price_grid, vol_grid = value_iteration_3d(
-        params,
-        n_price_bins=N_PRICE_BINS, price_half_range=PRICE_HALF_RANGE,
+        params, n_price_bins=N_PRICE_BINS, price_half_range=PRICE_HALF_RANGE,
         n_vol_bins=N_VOL_BINS, vol_lo=VOL_LO, vol_hi=VOL_HI,
     )
 
-    # ── RL (discrete inv+price+vol + random init for full state coverage) ─
-    print("\n[2/4] Training DQN (state = one-hot inv+price+vol, random init) …")
-    train_env = MarketMakingEnv(
+    train_params = MarketParams(
+        spread_options=SPREAD_OPTIONS, terminal_penalty=0.0,
+        episode_length=300,
+    )
+
+    # ── RL Regular (continuous, vectorized for GPU) ─────────────────────
+    print("\n[2/5] Training DQN (continuous state, vectorized) …")
+    def _make_env_reg():
+        return MarketMakingEnv(
+            train_params, use_volatility_dynamics=True,
+            include_price=True, price_scale=PRICE_SCALE, vol_grid=None,
+            discrete_inventory=False, price_grid=None,
+            random_init=True, use_continuous_state=True, seed=SEED,
+        )
+    train_env_reg = VecMarketMakingEnv(32, _make_env_reg)
+    agent_reg = DQNAgent(
+        state_dim=train_env_reg.state_dim, n_actions=train_env_reg.n_actions,
+        lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
+        learning_starts=5_000, tau=0.005, seed=SEED,
+    )
+    agent_reg.train(train_env_reg, n_episodes=500, epsilon_decay_steps=150_000, verbose=True)
+
+    # ── RL Distillation ───────────────────────────────────────────────
+    print("\n[3/5] Training DQN via policy distillation …")
+    env_obs = MarketMakingEnv(
         params, use_volatility_dynamics=True,
         include_price=True, price_scale=PRICE_SCALE,
         discrete_inventory=True, price_grid=price_grid, vol_grid=vol_grid,
-        random_init=True,  # Start from random (I, price, vol) → visit all states
-        seed=SEED,
+        use_continuous_state=False, seed=SEED,
+    )
+    agent_dist = DQNAgent(
+        state_dim=env_obs.state_dim, n_actions=env_obs.n_actions,
+        lr=1e-3, gamma=params.discount, batch_size=BATCH_DISTILL, hidden_dim=HIDDEN_DISTILL, seed=SEED,
+    )
+    agent_dist.train_distillation(
+        env_obs, policy_dp, params, price_grid=price_grid, vol_grid=vol_grid,
+        n_epochs=300, batch_size=BATCH_DISTILL, verbose=True, log_interval=30,
     )
 
-    agent = DQNAgent(
-        state_dim=train_env.state_dim,
-        n_actions=train_env.n_actions,
-        lr=2e-4,
-        gamma=params.discount,
-        batch_size=64,
-        hidden_dim=256,
-        learning_starts=20_000,
-        tau=0.005,
-        seed=SEED,
-    )
-    ep_rewards, _ = agent.train(
-        train_env, n_episodes=20_000,
-        epsilon_start=1.0, epsilon_end=0.02,
-        epsilon_decay_steps=1_200_000, verbose=True,
-    )
-
-    # ── evaluate (same env config + per-episode seeds → identical trajectories) ─
-    print("\n[3/4] Evaluating (1 000 episodes, stochastic σ, paired trajectories) …")
-    eval_env = MarketMakingEnv(
+    # ── Evaluate ───────────────────────────────────────────────────────
+    print("\n[4/5] Evaluating (1 000 episodes each) …")
+    eval_base = MarketMakingEnv(
         params, use_volatility_dynamics=True,
         include_price=True, price_scale=PRICE_SCALE,
-        discrete_inventory=True, price_grid=price_grid, vol_grid=vol_grid, seed=EVAL_SEED,
+        discrete_inventory=True, price_grid=price_grid, vol_grid=vol_grid,
+        seed=EVAL_SEED,
     )
     dp_stats = simulate_dp_policy_3d(
-        eval_env, policy_dp, params, price_grid, vol_grid,
+        eval_base, policy_dp, params, price_grid, vol_grid,
         n_episodes=1000, episode_seed_base=EVAL_SEED,
     )
-    eval_env = MarketMakingEnv(
+
+    eval_reg = MarketMakingEnv(
+        params, use_volatility_dynamics=True,
+        include_price=True, price_scale=PRICE_SCALE, vol_grid=None,
+        discrete_inventory=False, use_continuous_state=True, seed=EVAL_SEED,
+    )
+    reg_stats = agent_reg.evaluate(eval_reg, n_episodes=1000, episode_seed_base=EVAL_SEED)
+
+    eval_dist = MarketMakingEnv(
         params, use_volatility_dynamics=True,
         include_price=True, price_scale=PRICE_SCALE,
-        discrete_inventory=True, price_grid=price_grid, vol_grid=vol_grid, seed=EVAL_SEED,
+        discrete_inventory=True, price_grid=price_grid, vol_grid=vol_grid,
+        use_continuous_state=False, seed=EVAL_SEED,
     )
-    rl_stats = agent.evaluate(eval_env, n_episodes=1000, episode_seed_base=EVAL_SEED)
+    dist_stats = agent_dist.evaluate(eval_dist, n_episodes=1000, episode_seed_base=EVAL_SEED)
 
-    _print_table(dp_stats, rl_stats)
+    _print_table(dp_stats, reg_stats, dist_stats)
 
-    # ── plots ─────────────────────────────────────────────────────────
-    print("\n[4/4] Plotting …")
+    print("\n  Experiment 3 — Mean MtM PnL:")
+    print(f"    DP: {dp_stats['mean_pnl']:.2f}  RL (regular): {reg_stats['mean_pnl']:.2f}  RL (distill): {dist_stats['mean_pnl']:.2f}")
+
+    # ── Plots (policy at mid price, mid vol) ───────────────────────────
+    print("\nPlotting …")
+    mid_p = N_PRICE_BINS // 2
+    mid_v = N_VOL_BINS // 2
+    dp_bids = [params.action_to_spreads(policy_dp[i, mid_p, mid_v])[0] for i in range(params.n_inventory_states)]
+    dp_asks = [params.action_to_spreads(policy_dp[i, mid_p, mid_v])[1] for i in range(params.n_inventory_states)]
+
+    def get_rl_spreads(agent, env):
+        bids, asks = [], []
+        price_dev = float(price_grid[mid_p])
+        vol = float(vol_grid[mid_v])
+        for I in inventories:
+            obs = env.obs_for_state(I, price_dev=price_dev, vol=vol)
+            mask = DQNAgent.boundary_mask(I, params)
+            a = agent.select_action(obs, valid_mask=mask)
+            db, da = params.action_to_spreads(a)
+            bids.append(db)
+            asks.append(da)
+        return bids, asks
+
+    reg_bids, reg_asks = get_rl_spreads(agent_reg, eval_reg)
+    dist_bids, dist_asks = get_rl_spreads(agent_dist, eval_dist)
+
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    # (0,0) Policy slice at price=0, vol=θ
-    mid_p = N_PRICE_BINS // 2
-    mid_v = np.argmin(np.abs(vol_grid - params.vol_long_run_mean))
-    dp_bids = [params.action_to_spreads(policy_dp[i, mid_p, mid_v])[0]
-               for i in range(params.n_inventory_states)]
-    dp_asks = [params.action_to_spreads(policy_dp[i, mid_p, mid_v])[1]
-               for i in range(params.n_inventory_states)]
-    rl_bids, rl_asks = [], []
-    for I in inventories:
-        obs = eval_env.obs_for_state(I, price_dev=0.0, vol=params.vol_long_run_mean)
-        a = agent.select_action(obs)
-        db, da = params.action_to_spreads(a)
-        rl_bids.append(db)
-        rl_asks.append(da)
-
-    axes[0, 0].step(inventories, dp_bids, "b-o", where="mid", ms=5, label="DP bid")
-    axes[0, 0].step(inventories, dp_asks, "b-s", where="mid", ms=5, label="DP ask", ls="--")
-    axes[0, 0].step(inventories, rl_bids, "r-o", where="mid", ms=5, label="RL bid")
-    axes[0, 0].step(inventories, rl_asks, "r-s", where="mid", ms=5, label="RL ask", ls="--")
+    axes[0, 0].step(inventories, dp_bids, "b-o", where="mid", ms=5, label="DP")
+    axes[0, 0].step(inventories, reg_bids, "r--s", where="mid", ms=4, label="RL (regular)")
+    axes[0, 0].step(inventories, dist_bids, "m--d", where="mid", ms=4, label="RL (distill)")
     axes[0, 0].set_xlabel("Inventory")
-    axes[0, 0].set_ylabel("Half-spread")
-    axes[0, 0].set_title("Policy Slice at Price=0, σ=θ")
+    axes[0, 0].set_ylabel("Bid half-spread")
+    axes[0, 0].set_title("Bid Spreads (mid price, mid vol)")
     axes[0, 0].legend(fontsize=8)
     axes[0, 0].grid(True, alpha=0.3)
 
-    # (0,1) Reward distribution
-    lo = min(dp_stats["episode_rewards"].min(), rl_stats["episode_rewards"].min())
-    hi = max(dp_stats["episode_rewards"].max(), rl_stats["episode_rewards"].max())
-    bins = np.linspace(lo, hi, 50)
-    axes[0, 1].hist(dp_stats["episode_rewards"], bins=bins, alpha=0.5, label="DP", edgecolor="k")
-    axes[0, 1].hist(rl_stats["episode_rewards"], bins=bins, alpha=0.5, label="RL", edgecolor="k")
-    axes[0, 1].axvline(dp_stats["mean_reward"], color="C0", ls="--")
-    axes[0, 1].axvline(rl_stats["mean_reward"], color="C1", ls="--")
-    axes[0, 1].set_xlabel("Episode Reward")
-    axes[0, 1].set_ylabel("Frequency")
-    axes[0, 1].set_title("Reward Distribution")
-    axes[0, 1].legend()
+    axes[0, 1].step(inventories, dp_asks, "b-o", where="mid", ms=5, label="DP")
+    axes[0, 1].step(inventories, reg_asks, "r--s", where="mid", ms=4, label="RL (regular)")
+    axes[0, 1].step(inventories, dist_asks, "m--d", where="mid", ms=4, label="RL (distill)")
+    axes[0, 1].set_xlabel("Inventory")
+    axes[0, 1].set_ylabel("Ask half-spread")
+    axes[0, 1].set_title("Ask Spreads (mid price, mid vol)")
+    axes[0, 1].legend(fontsize=8)
+    axes[0, 1].grid(True, alpha=0.3)
 
-    # (1,0) Cumulative PnL
-    n_ep = len(dp_stats["episode_pnls"])
-    cum_dp = np.cumsum(dp_stats["episode_pnls"])
-    cum_rl = np.cumsum(rl_stats["episode_pnls"])
-    axes[1, 0].plot(range(1, n_ep + 1), cum_dp, label="DP", lw=1)
-    axes[1, 0].plot(range(1, n_ep + 1), cum_rl, label="RL", lw=1)
-    axes[1, 0].set_xlabel("Episode")
-    axes[1, 0].set_ylabel("Cumulative MtM PnL")
-    axes[1, 0].set_title("Cumulative PnL")
-    axes[1, 0].legend()
-    axes[1, 0].grid(True, alpha=0.3)
+    all_rewards = [dp_stats["episode_rewards"], reg_stats["episode_rewards"], dist_stats["episode_rewards"]]
+    lo, hi = min(r.min() for r in all_rewards), max(r.max() for r in all_rewards)
+    bins = np.linspace(lo, hi, 40)
+    axes[1, 0].hist(dp_stats["episode_rewards"], bins=bins, alpha=0.35, label="DP", edgecolor="k")
+    axes[1, 0].hist(reg_stats["episode_rewards"], bins=bins, alpha=0.35, label="RL (regular)", edgecolor="k")
+    axes[1, 0].hist(dist_stats["episode_rewards"], bins=bins, alpha=0.35, label="RL (distill)", edgecolor="k")
+    axes[1, 0].set_xlabel("Episode Reward")
+    axes[1, 0].set_ylabel("Frequency")
+    axes[1, 0].set_title("Reward Distribution")
+    axes[1, 0].legend(fontsize=8)
 
-    # (1,1) Final inventory distribution
     inv_bins = range(-params.max_inventory - 1, params.max_inventory + 2)
-    axes[1, 1].hist(dp_stats["final_inventories"], bins=inv_bins, alpha=0.5,
-                     label="DP", edgecolor="k", align="left")
-    axes[1, 1].hist(rl_stats["final_inventories"], bins=inv_bins, alpha=0.5,
-                     label="RL", edgecolor="k", align="left")
+    axes[1, 1].hist(dp_stats["final_inventories"], bins=inv_bins, alpha=0.35, label="DP", edgecolor="k", align="left")
+    axes[1, 1].hist(reg_stats["final_inventories"], bins=inv_bins, alpha=0.35, label="RL (regular)", edgecolor="k", align="left")
+    axes[1, 1].hist(dist_stats["final_inventories"], bins=inv_bins, alpha=0.35, label="RL (distill)", edgecolor="k", align="left")
     axes[1, 1].set_xlabel("Final Inventory")
     axes[1, 1].set_ylabel("Frequency")
     axes[1, 1].set_title("Final Inventory Distribution")
-    axes[1, 1].legend()
+    axes[1, 1].legend(fontsize=8)
 
-    fig.suptitle("Experiment 3: (Inventory, Price, Vol) State — DP vs RL",
-                 fontsize=14, y=1.01)
+    fig.suptitle("Experiment 3: (Inventory, Price, Vol) — DP vs RL (regular, distillation)")
     plt.tight_layout()
     plt.savefig("results/exp3_comparison.png", dpi=150, bbox_inches="tight")
     print("→ saved results/exp3_comparison.png")
 
-    # ── policy heatmaps: bid & ask over (inventory, vol) at price=0 ──
-    fig2, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+    # Cumulative PnL
+    n_ep = len(dp_stats["episode_pnls"])
+    fig_pnl, ax_pnl = plt.subplots(1, 1, figsize=(10, 4))
+    ax_pnl.plot(range(1, n_ep + 1), np.cumsum(dp_stats["episode_pnls"]), label="DP", lw=1)
+    ax_pnl.plot(range(1, n_ep + 1), np.cumsum(reg_stats["episode_pnls"]), label="RL (regular)", lw=1)
+    ax_pnl.plot(range(1, n_ep + 1), np.cumsum(dist_stats["episode_pnls"]), label="RL (distill)", lw=1)
+    ax_pnl.set_xlabel("Episode")
+    ax_pnl.set_ylabel("Cumulative MtM PnL")
+    ax_pnl.set_title("Experiment 3: Cumulative PnL")
+    ax_pnl.legend(fontsize=8)
+    ax_pnl.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("results/exp3_pnl.png", dpi=150, bbox_inches="tight")
+    print("→ saved results/exp3_pnl.png")
 
+    # ── Policy heatmaps at mid vol (DP, regular, distill) ───────────────
+    fig2, axes2 = plt.subplots(2, 3, figsize=(16, 10))
+    mid_v = N_VOL_BINS // 2
+    vol_mid = float(vol_grid[mid_v])
     inv_norm = np.linspace(-1, 1, 21)
-    vol_vals = np.linspace(VOL_LO, VOL_HI, 21)
+    price_norm = np.linspace(-1, 1, 21)
 
-    dp_bid_map = np.zeros((len(vol_vals), len(inv_norm)))
+    def build_heatmap_3d(agent, env):
+        bid_map = np.zeros((len(price_norm), len(inv_norm)))
+        ask_map = np.zeros_like(bid_map)
+        for i, pn in enumerate(price_norm):
+            price_dev = pn * PRICE_HALF_RANGE
+            for j, ni in enumerate(inv_norm):
+                inv = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1))
+                inv = params.index_to_inventory(inv)
+                obs = env.obs_for_state(inv, price_dev=price_dev, vol=vol_mid)
+                mask = DQNAgent.boundary_mask(inv, params)
+                a = agent.select_action(obs, valid_mask=mask)
+                db, da = params.action_to_spreads(a)
+                bid_map[i, j] = db
+                ask_map[i, j] = da
+        return bid_map, ask_map
+
+    dp_bid_map = np.zeros((len(price_norm), len(inv_norm)))
     dp_ask_map = np.zeros_like(dp_bid_map)
-    rl_bid_map = np.zeros_like(dp_bid_map)
-    rl_ask_map = np.zeros_like(dp_bid_map)
-
-    for i, v in enumerate(vol_vals):
-        sv = int(np.clip(np.round((v - vol_grid[0]) / (vol_grid[1] - vol_grid[0])),
-                 0, N_VOL_BINS - 1))
+    for i, pn in enumerate(price_norm):
+        sp = int(np.clip(np.round((pn * PRICE_HALF_RANGE - price_grid[0]) / (price_grid[1] - price_grid[0])), 0, N_PRICE_BINS - 1))
         for j, ni in enumerate(inv_norm):
-            si = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory),
-                     0, params.n_inventory_states - 1))
-            db, da = params.action_to_spreads(policy_dp[si, mid_p, sv])
+            si = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1))
+            db, da = params.action_to_spreads(policy_dp[si, sp, mid_v])
             dp_bid_map[i, j] = db
             dp_ask_map[i, j] = da
 
-            inv = params.index_to_inventory(int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1)))
-            obs = eval_env.obs_for_state(inv, price_dev=0.0, vol=v)
-            a = agent.select_action(obs)
-            db, da = params.action_to_spreads(a)
-            rl_bid_map[i, j] = db
-            rl_ask_map[i, j] = da
+    reg_bid_map, reg_ask_map = build_heatmap_3d(agent_reg, eval_reg)
+    dist_bid_map, dist_ask_map = build_heatmap_3d(agent_dist, eval_dist)
 
-    extent = [inventories[0], inventories[-1], VOL_LO, VOL_HI]
-    vmin = min(SPREAD_OPTIONS)
-    vmax = max(SPREAD_OPTIONS)
+    extent = [inventories[0], inventories[-1], -PRICE_HALF_RANGE, PRICE_HALF_RANGE]
+    vmin, vmax = min(SPREAD_OPTIONS), max(SPREAD_OPTIONS)
 
     for ax, data, title in [
-        (ax1, dp_bid_map, "DP: Bid δ*"),
-        (ax2, dp_ask_map, "DP: Ask δ*"),
-        (ax3, rl_bid_map, "RL: Bid δ*"),
-        (ax4, rl_ask_map, "RL: Ask δ*"),
+        (axes2[0, 0], dp_bid_map, "DP: Bid δ*"),
+        (axes2[0, 1], reg_bid_map, "RL (regular): Bid δ*"),
+        (axes2[0, 2], dist_bid_map, "RL (distill): Bid δ*"),
+        (axes2[1, 0], dp_ask_map, "DP: Ask δ*"),
+        (axes2[1, 1], reg_ask_map, "RL (regular): Ask δ*"),
+        (axes2[1, 2], dist_ask_map, "RL (distill): Ask δ*"),
     ]:
-        im = ax.imshow(data, aspect="auto", origin="lower", extent=extent,
-                       cmap="viridis", vmin=vmin, vmax=vmax)
+        im = ax.imshow(data, aspect="auto", origin="lower", extent=extent, cmap="viridis", vmin=vmin, vmax=vmax)
         ax.set_xlabel("Inventory")
-        ax.set_ylabel("Volatility σ")
+        ax.set_ylabel("Price deviation")
         ax.set_title(title)
         plt.colorbar(im, ax=ax)
 
-    fig2.suptitle("Experiment 3: Policy Heatmaps (Inventory × Vol) at Price=0",
-                  fontsize=14, y=1.01)
+    fig2.suptitle(f"Experiment 3: Policy Heatmaps at mid vol (σ={vol_mid:.2f})")
     plt.tight_layout()
     plt.savefig("results/exp3_policy_heatmap.png", dpi=150, bbox_inches="tight")
     print("→ saved results/exp3_policy_heatmap.png")
+
     plt.show()
 
 
-def _print_table(dp_stats, rl_stats):
+def _print_table(dp_stats, reg_stats, dist_stats):
     rows = [
-        ("Mean Reward",       "mean_reward",          ".2f"),
-        ("Std Reward",        "std_reward",           ".2f"),
-        ("Reward Sharpe",     "sharpe",               ".3f"),
-        ("Mean MtM PnL",     "mean_pnl",             ".2f"),
-        ("Mean |Inventory|",  "mean_abs_inventory",   ".2f"),
-        ("Max |Inventory|",   "max_abs_inventory",    "d"),
-        ("Mean |Final Inv|",  "mean_final_inventory", ".2f"),
+        ("Mean Reward", "mean_reward", ".2f"),
+        ("Std Reward", "std_reward", ".2f"),
+        ("Mean MtM PnL", "mean_pnl", ".2f"),
+        ("Mean |Final Inv|", "mean_final_inventory", ".2f"),
     ]
-    hdr = f"  {'Metric':<22s}  {'DP':>14s}  {'RL (DQN)':>14s}"
+    hdr = f"  {'Metric':<18s}  {'DP':>10s}  {'Regular':>10s}  {'Distill':>10s}"
     print(f"\n{hdr}")
     print("  " + "─" * (len(hdr) - 2))
     for name, key, fmt in rows:
-        print(f"  {name:<22s}  {format(dp_stats[key], fmt):>14s}  {format(rl_stats[key], fmt):>14s}")
+        v = [dp_stats[key], reg_stats[key], dist_stats[key]]
+        print(f"  {name:<18s}  " + "  ".join(format(x, fmt) for x in v))
 
 
 if __name__ == "__main__":
