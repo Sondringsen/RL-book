@@ -38,7 +38,7 @@ def main():
 
     # ── DP ────────────────────────────────────────────────────────────
     print("\n[1/4] DP 2-D value iteration …")
-    V_dp, policy_dp, residuals, price_grid = value_iteration_2d(
+    V_dp, policy_dp, price_grid = value_iteration_2d(
         params, n_price_bins=N_PRICE_BINS, price_half_range=PRICE_HALF_RANGE,
     )
 
@@ -110,9 +110,9 @@ def main():
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 
     mid_idx = N_PRICE_BINS // 2
-    dp_bids = [params.action_to_spreads(policy_dp[i, mid_idx])[0]
+    dp_bids = [params.action_to_spreads(policy_dp[0, i, mid_idx])[0]
                for i in range(params.n_inventory_states)]
-    dp_asks = [params.action_to_spreads(policy_dp[i, mid_idx])[1]
+    dp_asks = [params.action_to_spreads(policy_dp[0, i, mid_idx])[1]
                for i in range(params.n_inventory_states)]
     rl_bids, rl_asks = [], []
     for I in inventories:
@@ -192,7 +192,7 @@ def main():
         for j, ni in enumerate(inv_norm):
             si = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory),
                      0, params.n_inventory_states - 1))
-            db, da = params.action_to_spreads(policy_dp[si, sp])
+            db, da = params.action_to_spreads(policy_dp[0, si, sp])
             dp_bid_map[i, j] = db
             dp_ask_map[i, j] = da
 

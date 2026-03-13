@@ -38,7 +38,7 @@ def main():
 
     # ── DP ────────────────────────────────────────────────────────────
     print("\n[1/5] DP value iteration …")
-    V_dp, policy_dp, residuals = value_iteration(params)
+    V_dp, policy_dp = value_iteration(params)
 
     train_params = MarketParams(
         spread_options=SPREAD_OPTIONS,
@@ -73,7 +73,7 @@ def main():
         state_dim=env_obs.state_dim, n_actions=env_obs.n_actions,
         lr=1e-3, gamma=params.discount, batch_size=BATCH_DISTILL, hidden_dim=HIDDEN_DISTILL, seed=SEED,
     )
-    agent_dist.train_distillation(env_obs, policy_dp, params, n_epochs=300, verbose=True)
+    agent_dist.train_distillation(env_obs, policy_dp[0], params, n_epochs=300, verbose=True)
 
     # ── Evaluate ───────────────────────────────────────────────────────
     print("\n[4/4] Evaluating (1 000 episodes each) …")
@@ -98,8 +98,8 @@ def main():
     print("\nPlotting …")
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    dp_bids = [params.action_to_spreads(policy_dp[i])[0] for i in range(params.n_inventory_states)]
-    dp_asks = [params.action_to_spreads(policy_dp[i])[1] for i in range(params.n_inventory_states)]
+    dp_bids = [params.action_to_spreads(policy_dp[0, i])[0] for i in range(params.n_inventory_states)]
+    dp_asks = [params.action_to_spreads(policy_dp[0, i])[1] for i in range(params.n_inventory_states)]
 
     def get_rl_spreads(agent, env):
         bids, asks = [], []

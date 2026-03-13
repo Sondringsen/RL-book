@@ -90,7 +90,7 @@ def main():
     try:
         with ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(_run_dp)
-            V_dp, policy_dp, residuals, price_grid, vol_grid = future.result(
+            V_dp, policy_dp, price_grid, vol_grid = future.result(
                 timeout=DP_TIMEOUT_SEC
             )
         timings["DP (3D)"] = time.perf_counter() - t0
@@ -238,7 +238,7 @@ def main():
     axes[0, 0].step(inventories, rl_bids, "r--s", where="mid", ms=4, label="RL (continuous)")
     if dp_result is not None:
         dp_bids = [
-            params.action_to_spreads(policy_dp[i, mid_p, mid_v])[0]
+            params.action_to_spreads(policy_dp[0, i, mid_p, mid_v])[0]
             for i in range(params.n_inventory_states)
         ]
         axes[0, 0].step(inventories, dp_bids, "b-o", where="mid", ms=5, label="DP")
@@ -251,7 +251,7 @@ def main():
     axes[0, 1].step(inventories, rl_asks, "r--s", where="mid", ms=4, label="RL (continuous)")
     if dp_result is not None:
         dp_asks = [
-            params.action_to_spreads(policy_dp[i, mid_p, mid_v])[1]
+            params.action_to_spreads(policy_dp[0, i, mid_p, mid_v])[1]
             for i in range(params.n_inventory_states)
         ]
         axes[0, 1].step(inventories, dp_asks, "b-o", where="mid", ms=5, label="DP")
@@ -341,7 +341,7 @@ def main():
                 sp = int(np.clip(np.argmin(np.abs(_pg - price_dev)), 0, len(_pg) - 1))
                 for j, ni in enumerate(inv_norm):
                     si = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1))
-                    db, da = params.action_to_spreads(policy_dp[si, sp, mid_v])
+                    db, da = params.action_to_spreads(policy_dp[0, si, sp, mid_v])
                     dp_bid_map[i, j] = db
                     dp_ask_map[i, j] = da
             for ax, data, title in [

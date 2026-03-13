@@ -1,8 +1,10 @@
-"""Phase 2: value-iteration solver for the simplified (inventory-only) MDP.
+"""Finite-horizon backward induction for the market-making MDP.
 
-Bellman equation (asymmetric spreads + adverse selection)
----------------------------------------------------------
-    V(I) = max_{δ_bid, δ_ask}  Σ_{I'} P(I'|I,δ) · [r(I,δ,I') + γ V(I')]
+Solves V_t(s) = max_a E[r + γ V_{t+1}(s')] for t = T-1, …, 0
+with terminal value  V_T(I) = −terminal_penalty · |I|.
+
+The policy is time-dependent: π_t(s) may differ across t, allowing the
+agent to reduce inventory as the episode end approaches.
 
 Transitions (p_b = fill_prob(δ_bid), p_a = fill_prob(δ_ask)):
     Interior I:
@@ -40,17 +42,14 @@ def _gaussian_transition_matrix(grid, shift, sigma):
 
 def value_iteration(
     params: MarketParams,
-    tol: float = 1e-8,
-    max_iter: int = 10000,
     verbose: bool = True,
 ):
-    """Run value iteration with asymmetric spreads and adverse selection.
+    """Finite-horizon backward induction (1-D: inventory only).
 
     Returns
     -------
-    V : ndarray, shape (n_states,)
-    policy : ndarray[int], shape (n_states,)  — flat action indices
-    residuals : list[float]
+    V : ndarray, shape (n_states,)        — value at t=0
+    policy : ndarray[int], shape (T, n_states) — time-dependent policy
     """
     n_s = params.n_inventory_states
     n_a = params.n_actions
@@ -58,12 +57,16 @@ def value_iteration(
     gamma = params.discount
     alpha = params.inventory_penalty
     adv = params.adverse_selection
+    T = params.episode_length
+    tp = params.terminal_penalty
 
-    V = np.zeros(n_s)
-    policy = np.zeros(n_s, dtype=int)
-    residuals: list[float] = []
+    V_next = np.zeros(n_s)
+    for s in range(n_s):
+        V_next[s] = -tp * abs(params.index_to_inventory(s))
 
-    for it in range(max_iter):
+    policy = np.zeros((T, n_s), dtype=int)
+
+    for t in range(T - 1, -1, -1):
         V_new = np.full(n_s, -np.inf)
 
         for s in range(n_s):
@@ -79,21 +82,21 @@ def value_iteration(
                 at_lower = I <= -I_max
 
                 if at_upper and at_lower:
-                    q = -alpha * I**2 + gamma * V[s]
+                    q = -alpha * I**2 + gamma * V_next[s]
 
                 elif at_upper:
                     s_ask = params.inventory_to_index(I - 1)
                     r_ask  = d_ask + (I - 1) * adv - alpha * (I - 1)**2
                     r_none = -alpha * I**2
-                    q = (p_a     * (r_ask  + gamma * V[s_ask])
-                         + (1 - p_a) * (r_none + gamma * V[s]))
+                    q = (p_a     * (r_ask  + gamma * V_next[s_ask])
+                         + (1 - p_a) * (r_none + gamma * V_next[s]))
 
                 elif at_lower:
                     s_bid = params.inventory_to_index(I + 1)
                     r_bid  = d_bid - (I + 1) * adv - alpha * (I + 1)**2
                     r_none = -alpha * I**2
-                    q = (p_b     * (r_bid  + gamma * V[s_bid])
-                         + (1 - p_b) * (r_none + gamma * V[s]))
+                    q = (p_b     * (r_bid  + gamma * V_next[s_bid])
+                         + (1 - p_b) * (r_none + gamma * V_next[s]))
 
                 else:
                     s_bid = params.inventory_to_index(I + 1)
@@ -104,30 +107,26 @@ def value_iteration(
                     r_ask  = d_ask + (I - 1) * adv - alpha * (I - 1)**2
                     r_none = -alpha * I**2
 
-                    q = (p_b * p_a         * (r_both + gamma * V[s])
-                         + p_b * (1 - p_a) * (r_bid  + gamma * V[s_bid])
-                         + (1 - p_b) * p_a * (r_ask  + gamma * V[s_ask])
-                         + (1 - p_b) * (1 - p_a) * (r_none + gamma * V[s]))
+                    q = (p_b * p_a         * (r_both + gamma * V_next[s])
+                         + p_b * (1 - p_a) * (r_bid  + gamma * V_next[s_bid])
+                         + (1 - p_b) * p_a * (r_ask  + gamma * V_next[s_ask])
+                         + (1 - p_b) * (1 - p_a) * (r_none + gamma * V_next[s]))
 
                 if q >= best_q:
                     best_q, best_a = q, a
 
             V_new[s] = best_q
-            policy[s] = best_a
+            policy[t, s] = best_a
 
-        residual = np.max(np.abs(V_new - V))
-        residuals.append(residual)
-        V = V_new
+        V_next = V_new
 
-        if verbose and (it + 1) % 200 == 0:
-            print(f"  iter {it+1:>5d}  residual = {residual:.2e}")
+        if verbose and (T - t) % 50 == 0:
+            print(f"  backward step {T - t:>5d}/{T}")
 
-        if residual < tol:
-            if verbose:
-                print(f"  converged at iter {it+1}  (residual {residual:.2e})")
-            break
+    if verbose:
+        print(f"  finite-horizon backward induction complete (T={T})")
 
-    return V, policy, residuals
+    return V_next, policy
 
 
 def simulate_dp_policy(
@@ -137,7 +136,7 @@ def simulate_dp_policy(
     n_episodes: int = 1000,
     episode_seed_base: int = None,
 ):
-    """Roll out the DP policy in any MarketMakingEnv."""
+    """Roll out the time-dependent DP policy in any MarketMakingEnv."""
     episode_rewards = []
     episode_pnls = []
     final_inventories = []
@@ -151,8 +150,9 @@ def simulate_dp_policy(
         total_reward = 0.0
         done = False
         while not done:
+            t = env.step_count
             s_idx = params.inventory_to_index(env.inventory)
-            action = int(policy[s_idx])
+            action = int(policy[t, s_idx])
             _, reward, done, _ = env.step(action)
             total_reward += reward
 
@@ -197,10 +197,16 @@ def value_iteration_2d(
     params: MarketParams,
     n_price_bins: int = 21,
     price_half_range: float = 10.0,
-    tol: float = 1e-6,
-    max_iter: int = 2000,
     verbose: bool = True,
 ):
+    """Finite-horizon backward induction (2-D: inventory × price).
+
+    Returns
+    -------
+    V : ndarray, shape (n_inv, n_price)           — value at t=0
+    policy : ndarray[int], shape (T, n_inv, n_price) — time-dependent policy
+    price_grid : ndarray
+    """
     n_inv = params.n_inventory_states
     n_a = params.n_actions
     I_max = params.max_inventory
@@ -208,6 +214,8 @@ def value_iteration_2d(
     alpha = params.inventory_penalty
     adv = params.adverse_selection
     sigma = params.sigma_base
+    T = params.episode_length
+    tp = params.terminal_penalty
 
     price_grid = np.linspace(-price_half_range, price_half_range, n_price_bins)
 
@@ -215,12 +223,14 @@ def value_iteration_2d(
     trans = {s: _gaussian_transition_matrix(price_grid, s, sigma) for s in shifts}
     exp_dp = {s: trans[s] @ price_grid - price_grid for s in shifts}
 
-    V = np.zeros((n_inv, n_price_bins))
-    policy = np.zeros((n_inv, n_price_bins), dtype=int)
-    residuals: list[float] = []
+    V_next = np.zeros((n_inv, n_price_bins))
+    for si in range(n_inv):
+        V_next[si, :] = -tp * abs(params.index_to_inventory(si))
 
-    for it in range(max_iter):
-        V_new = np.full_like(V, -np.inf)
+    policy = np.zeros((T, n_inv, n_price_bins), dtype=int)
+
+    for t in range(T - 1, -1, -1):
+        V_new = np.full_like(V_next, -np.inf)
 
         for si in range(n_inv):
             I = params.index_to_inventory(si)
@@ -238,28 +248,28 @@ def value_iteration_2d(
                 Q = np.zeros(n_price_bins)
 
                 if at_upper and at_lower:
-                    Q = -alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V[si])
+                    Q = -alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V_next[si])
 
                 elif at_upper:
                     Ia, sa = I - 1, params.inventory_to_index(I - 1)
-                    Q_ask = da - alpha * Ia**2 + Ia * exp_dp[adv] + gamma * (trans[adv] @ V[sa])
-                    Q_no = -alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V[si])
+                    Q_ask = da - alpha * Ia**2 + Ia * exp_dp[adv] + gamma * (trans[adv] @ V_next[sa])
+                    Q_no = -alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V_next[si])
                     Q = pa * Q_ask + (1 - pa) * Q_no
 
                 elif at_lower:
                     Ib, sb = I + 1, params.inventory_to_index(I + 1)
-                    Q_bid = db - alpha * Ib**2 + Ib * exp_dp[-adv] + gamma * (trans[-adv] @ V[sb])
-                    Q_no = -alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V[si])
+                    Q_bid = db - alpha * Ib**2 + Ib * exp_dp[-adv] + gamma * (trans[-adv] @ V_next[sb])
+                    Q_no = -alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V_next[si])
                     Q = pb * Q_bid + (1 - pb) * Q_no
 
                 else:
                     Ib, sb = I + 1, params.inventory_to_index(I + 1)
                     Ia, sa = I - 1, params.inventory_to_index(I - 1)
 
-                    Q_both = db + da - alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V[si])
-                    Q_bid = db - alpha * Ib**2 + Ib * exp_dp[-adv] + gamma * (trans[-adv] @ V[sb])
-                    Q_ask = da - alpha * Ia**2 + Ia * exp_dp[adv] + gamma * (trans[adv] @ V[sa])
-                    Q_no = -alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V[si])
+                    Q_both = db + da - alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V_next[si])
+                    Q_bid = db - alpha * Ib**2 + Ib * exp_dp[-adv] + gamma * (trans[-adv] @ V_next[sb])
+                    Q_ask = da - alpha * Ia**2 + Ia * exp_dp[adv] + gamma * (trans[adv] @ V_next[sa])
+                    Q_no = -alpha * I**2 + I * exp_dp[0.0] + gamma * (trans[0.0] @ V_next[si])
 
                     Q = (pb * pa * Q_both
                          + pb * (1 - pa) * Q_bid
@@ -271,20 +281,17 @@ def value_iteration_2d(
                 best_A = np.where(better, a, best_A)
 
             V_new[si] = best_Q
-            policy[si] = best_A
+            policy[t, si] = best_A
 
-        residual = float(np.max(np.abs(V_new - V)))
-        residuals.append(residual)
-        V = V_new.copy()
+        V_next = V_new.copy()
 
-        if verbose and (it + 1) % 100 == 0:
-            print(f"  iter {it+1:>5d}  residual = {residual:.2e}")
-        if residual < tol:
-            if verbose:
-                print(f"  converged at iter {it+1}  (residual {residual:.2e})")
-            break
+        if verbose and (T - t) % 50 == 0:
+            print(f"  backward step {T - t:>5d}/{T}")
 
-    return V, policy, residuals, price_grid
+    if verbose:
+        print(f"  finite-horizon backward induction complete (T={T})")
+
+    return V_next, policy, price_grid
 
 
 def simulate_dp_policy_2d(env, policy, params, price_grid, n_episodes=1000, episode_seed_base=None):
@@ -299,9 +306,10 @@ def simulate_dp_policy_2d(env, policy, params, price_grid, n_episodes=1000, epis
         total_reward = 0.0
         done = False
         while not done:
+            t = env.step_count
             si = params.inventory_to_index(env.inventory)
             sp = _find_nearest(price_grid, env.mid_price - params.initial_price)
-            action = int(policy[si, sp])
+            action = int(policy[t, si, sp])
             _, reward, done, _ = env.step(action)
             total_reward += reward
         episode_rewards.append(total_reward)
@@ -323,16 +331,25 @@ def value_iteration_3d(
     n_vol_bins: int = 9,
     vol_lo: float = 0.3,
     vol_hi: float = 2.0,
-    tol: float = 1e-5,
-    max_iter: int = 2000,
     verbose: bool = True,
 ):
+    """Finite-horizon backward induction (3-D: inventory × price × vol).
+
+    Returns
+    -------
+    V : ndarray, shape (n_inv, n_price, n_vol)                — value at t=0
+    policy : ndarray[int], shape (T, n_inv, n_price, n_vol)   — time-dependent
+    price_grid : ndarray
+    vol_grid : ndarray
+    """
     n_inv = params.n_inventory_states
     n_a = params.n_actions
     I_max = params.max_inventory
     gamma = params.discount
     alpha = params.inventory_penalty
     adv = params.adverse_selection
+    T_horizon = params.episode_length
+    tp = params.terminal_penalty
 
     price_grid = np.linspace(-price_half_range, price_half_range, n_price_bins)
     vol_grid = np.linspace(vol_lo, vol_hi, n_vol_bins)
@@ -351,18 +368,20 @@ def value_iteration_3d(
     for vi in range(n_vol_bins):
         sig = vol_grid[vi]
         for s in shifts:
-            T = _gaussian_transition_matrix(price_grid, s, sig)
-            T_price[(vi, s)] = T
-            exp_dp[(vi, s)] = T @ price_grid - price_grid
+            Tp = _gaussian_transition_matrix(price_grid, s, sig)
+            T_price[(vi, s)] = Tp
+            exp_dp[(vi, s)] = Tp @ price_grid - price_grid
 
-    V = np.zeros((n_inv, n_price_bins, n_vol_bins))
-    policy = np.zeros((n_inv, n_price_bins, n_vol_bins), dtype=int)
-    residuals: list[float] = []
+    V_next = np.zeros((n_inv, n_price_bins, n_vol_bins))
+    for si in range(n_inv):
+        V_next[si, :, :] = -tp * abs(params.index_to_inventory(si))
 
-    for it in range(max_iter):
-        V_new = np.full_like(V, -np.inf)
+    policy = np.zeros((T_horizon, n_inv, n_price_bins, n_vol_bins), dtype=int)
 
-        EV_vol = np.einsum("ipw,vw->ipv", V, T_vol)
+    for t in range(T_horizon - 1, -1, -1):
+        V_new = np.full_like(V_next, -np.inf)
+
+        EV_vol = np.einsum("ipw,vw->ipv", V_next, T_vol)
 
         for si in range(n_inv):
             I = params.index_to_inventory(si)
@@ -409,20 +428,17 @@ def value_iteration_3d(
                     best_A = np.where(better, a, best_A)
 
                 V_new[si, :, vi] = best_Q
-                policy[si, :, vi] = best_A
+                policy[t, si, :, vi] = best_A
 
-        residual = float(np.max(np.abs(V_new - V)))
-        residuals.append(residual)
-        V = V_new.copy()
+        V_next = V_new.copy()
 
-        if verbose and (it + 1) % 50 == 0:
-            print(f"  iter {it+1:>5d}  residual = {residual:.2e}")
-        if residual < tol:
-            if verbose:
-                print(f"  converged at iter {it+1}  (residual {residual:.2e})")
-            break
+        if verbose and (T_horizon - t) % 50 == 0:
+            print(f"  backward step {T_horizon - t:>5d}/{T_horizon}")
 
-    return V, policy, residuals, price_grid, vol_grid
+    if verbose:
+        print(f"  finite-horizon backward induction complete (T={T_horizon})")
+
+    return V_next, policy, price_grid, vol_grid
 
 
 def simulate_dp_policy_3d(env, policy, params, price_grid, vol_grid, n_episodes=1000, episode_seed_base=None):
@@ -437,10 +453,11 @@ def simulate_dp_policy_3d(env, policy, params, price_grid, vol_grid, n_episodes=
         total_reward = 0.0
         done = False
         while not done:
+            t = env.step_count
             si = params.inventory_to_index(env.inventory)
             sp = _find_nearest(price_grid, env.mid_price - params.initial_price)
             sv = _find_nearest(vol_grid, env.volatility)
-            action = int(policy[si, sp, sv])
+            action = int(policy[t, si, sp, sv])
             _, reward, done, _ = env.step(action)
             total_reward += reward
         episode_rewards.append(total_reward)

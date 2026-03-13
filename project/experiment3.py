@@ -43,7 +43,7 @@ def main():
 
     # ── DP ────────────────────────────────────────────────────────────
     print("\n[1/5] DP 3-D value iteration …")
-    V_dp, policy_dp, residuals, price_grid, vol_grid = value_iteration_3d(
+    V_dp, policy_dp, price_grid, vol_grid = value_iteration_3d(
         params, n_price_bins=N_PRICE_BINS, price_half_range=PRICE_HALF_RANGE,
         n_vol_bins=N_VOL_BINS, vol_lo=VOL_LO, vol_hi=VOL_HI,
     )
@@ -83,7 +83,7 @@ def main():
         lr=1e-3, gamma=params.discount, batch_size=BATCH_DISTILL, hidden_dim=HIDDEN_DISTILL, seed=SEED,
     )
     agent_dist.train_distillation(
-        env_obs, policy_dp, params, price_grid=price_grid, vol_grid=vol_grid,
+        env_obs, policy_dp[0], params, price_grid=price_grid, vol_grid=vol_grid,
         n_epochs=300, batch_size=BATCH_DISTILL, verbose=True, log_interval=30,
     )
 
@@ -124,8 +124,8 @@ def main():
     print("\nPlotting …")
     mid_p = N_PRICE_BINS // 2
     mid_v = N_VOL_BINS // 2
-    dp_bids = [params.action_to_spreads(policy_dp[i, mid_p, mid_v])[0] for i in range(params.n_inventory_states)]
-    dp_asks = [params.action_to_spreads(policy_dp[i, mid_p, mid_v])[1] for i in range(params.n_inventory_states)]
+    dp_bids = [params.action_to_spreads(policy_dp[0, i, mid_p, mid_v])[0] for i in range(params.n_inventory_states)]
+    dp_asks = [params.action_to_spreads(policy_dp[0, i, mid_p, mid_v])[1] for i in range(params.n_inventory_states)]
 
     def get_rl_spreads(agent, env):
         bids, asks = [], []
@@ -232,7 +232,7 @@ def main():
         sp = int(np.clip(np.round((pn * PRICE_HALF_RANGE - price_grid[0]) / (price_grid[1] - price_grid[0])), 0, N_PRICE_BINS - 1))
         for j, ni in enumerate(inv_norm):
             si = int(np.clip(np.round(ni * params.max_inventory + params.max_inventory), 0, params.n_inventory_states - 1))
-            db, da = params.action_to_spreads(policy_dp[si, sp, mid_v])
+            db, da = params.action_to_spreads(policy_dp[0, si, sp, mid_v])
             dp_bid_map[i, j] = db
             dp_ask_map[i, j] = da
 
