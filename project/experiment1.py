@@ -170,8 +170,8 @@ def main():
     print("→ saved results/exp1_pnl.png")
 
     fig.suptitle("Experiment 1: Inventory-only — DP vs RL (regular, distillation)")
-    plt.tight_layout()
-    plt.savefig("results/exp1_comparison.png", dpi=150, bbox_inches="tight")
+    fig.tight_layout()
+    fig.savefig("results/exp1_comparison.png", dpi=150, bbox_inches="tight")
     print("→ saved results/exp1_comparison.png")
     plt.show()
 
