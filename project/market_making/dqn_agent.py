@@ -143,7 +143,7 @@ class DQNAgent:
         self.q_net = QNetwork(state_dim, n_actions, hidden_dim).to(self.device)
         self.target_net = QNetwork(state_dim, n_actions, hidden_dim).to(self.device)
         self.target_net.load_state_dict(self.q_net.state_dict())
-        if hasattr(torch, "compile"):
+        if hasattr(torch, "compile") and self.device.type != "cpu":
             self.q_net = torch.compile(self.q_net, mode="reduce-overhead")
 
         self.optimiser = optim.Adam(self.q_net.parameters(), lr=lr)
