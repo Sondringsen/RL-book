@@ -39,28 +39,21 @@ def main():
     print("\n[1/3] DP value iteration …")
     V_dp, policy_dp = value_iteration(params)
 
-    train_params = MarketParams(
-        spread_options=SPREAD_OPTIONS,
-        terminal_penalty=0.0,
-        sigma_base=SIGMA_BASE,
-        episode_length=300,
-    )
-
     # ── RL Discrete ────────────────────────────────────────────────────
     print("\n[2/3] Training DQN (discrete state, vectorized) …")
     def _make_env_disc():
         return MarketMakingEnv(
-            train_params, use_volatility_dynamics=False,
+            params, use_volatility_dynamics=False,
             include_price=False, discrete_inventory=True,
             random_init=True, use_continuous_state=False, seed=SEED,
         )
     train_env_disc = VecMarketMakingEnv(32, _make_env_disc)
     agent_disc = DQNAgent(
         state_dim=train_env_disc.state_dim, n_actions=train_env_disc.n_actions,
-        lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
+        lr=2e-4, gamma=params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
     )
-    agent_disc.train(train_env_disc, n_episodes=500, epsilon_decay_steps=150_000, verbose=True)
+    agent_disc.train(train_env_disc, n_episodes=1000, epsilon_decay_steps=150_000, verbose=True)
 
     # ── Evaluate ───────────────────────────────────────────────────────
     print("\n[3/3] Evaluating (1 000 episodes each) …")

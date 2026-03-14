@@ -15,8 +15,8 @@ from market_making.dp_solver import value_iteration_3d, simulate_dp_policy_3d
 from market_making.gpu_config import gpu_batch_size, gpu_hidden_dim, gpu_info
 
 SPREAD_OPTIONS = (0.5, 1.0, 1.5, 2.0, 2.5)
-N_PRICE_BINS = 15
-N_VOL_BINS = 9
+N_PRICE_BINS = 21
+N_VOL_BINS = 15
 PRICE_HALF_RANGE = 10.0
 VOL_LO, VOL_HI = 0.3, 2.0
 PRICE_SCALE = PRICE_HALF_RANGE
@@ -48,16 +48,11 @@ def main():
         n_vol_bins=N_VOL_BINS, vol_lo=VOL_LO, vol_hi=VOL_HI,
     )
 
-    train_params = MarketParams(
-        spread_options=SPREAD_OPTIONS, terminal_penalty=0.0,
-        episode_length=300,
-    )
-
     # ── RL Discrete ────────────────────────────────────────────────────
     print("\n[2/5] Training DQN (discrete state, vectorized) …")
     def _make_env_disc():
         return MarketMakingEnv(
-            train_params, use_volatility_dynamics=True,
+            params, use_volatility_dynamics=True,
             include_price=True, price_scale=PRICE_SCALE,
             discrete_inventory=True, price_grid=price_grid, vol_grid=vol_grid,
             random_init=True, use_continuous_state=False, seed=SEED,
@@ -65,16 +60,16 @@ def main():
     train_env_disc = VecMarketMakingEnv(32, _make_env_disc)
     agent_disc = DQNAgent(
         state_dim=train_env_disc.state_dim, n_actions=train_env_disc.n_actions,
-        lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
+        lr=2e-4, gamma=params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
     )
-    agent_disc.train(train_env_disc, n_episodes=1000, epsilon_decay_steps=150_000, verbose=True)
+    agent_disc.train(train_env_disc, n_episodes=2000, epsilon_decay_steps=150_000, verbose=True)
 
     # ── RL Continuous ─────────────────────────────────────────────────
     print("\n[3/5] Training DQN (continuous state, vectorized) …")
     def _make_env_cont():
         return MarketMakingEnv(
-            train_params, use_volatility_dynamics=True,
+            params, use_volatility_dynamics=True,
             include_price=True, price_scale=PRICE_SCALE, vol_grid=None,
             discrete_inventory=False, price_grid=None,
             random_init=True, use_continuous_state=True, seed=SEED,
@@ -82,10 +77,10 @@ def main():
     train_env_cont = VecMarketMakingEnv(32, _make_env_cont)
     agent_cont = DQNAgent(
         state_dim=train_env_cont.state_dim, n_actions=train_env_cont.n_actions,
-        lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
+        lr=2e-4, gamma=params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
     )
-    agent_cont.train(train_env_cont, n_episodes=1000, epsilon_decay_steps=150_000, verbose=True)
+    agent_cont.train(train_env_cont, n_episodes=2000, epsilon_decay_steps=150_000, verbose=True)
 
     # ── Evaluate ───────────────────────────────────────────────────────
     print("\n[4/5] Evaluating (1 000 episodes each) …")

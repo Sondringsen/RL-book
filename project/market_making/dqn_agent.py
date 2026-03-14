@@ -128,6 +128,7 @@ class DQNAgent:
         if seed is not None:
             torch.manual_seed(seed)
             random.seed(seed)
+            np.random.seed(seed)
 
         self.n_actions = n_actions
         self.gamma = gamma

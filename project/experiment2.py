@@ -54,17 +54,12 @@ def main():
     timings["DP"] = time.perf_counter() - t0
     print(f"  DP converged in {timings['DP']:.1f} s")
 
-    train_params = MarketParams(
-        spread_options=SPREAD_OPTIONS, terminal_penalty=0.0, sigma_base=SIGMA_BASE,
-        episode_length=300,
-    )
-
     # ── RL Discrete ────────────────────────────────────────────────────
     print("\n[2/5] Training DQN (discrete state, vectorized) …")
     t0 = time.perf_counter()
     def _make_env_disc():
         return MarketMakingEnv(
-            train_params, use_volatility_dynamics=False,
+            params, use_volatility_dynamics=False,
             include_price=True, price_scale=PRICE_SCALE,
             discrete_inventory=True, price_grid=price_grid,
             random_init=True, use_continuous_state=False, seed=SEED,
@@ -72,7 +67,7 @@ def main():
     train_env_disc = VecMarketMakingEnv(32, _make_env_disc)
     agent_disc = DQNAgent(
         state_dim=train_env_disc.state_dim, n_actions=train_env_disc.n_actions,
-        lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
+        lr=2e-4, gamma=params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
         use_prioritized_replay=True, rare_priority=3.0,
     )
@@ -88,7 +83,7 @@ def main():
     t0 = time.perf_counter()
     def _make_env_cont():
         return MarketMakingEnv(
-            train_params, use_volatility_dynamics=False,
+            params, use_volatility_dynamics=False,
             include_price=True, price_scale=PRICE_SCALE,
             discrete_inventory=True, price_grid=price_grid,
             random_init=True, use_continuous_state=True, seed=SEED,
@@ -96,7 +91,7 @@ def main():
     train_env_cont = VecMarketMakingEnv(32, _make_env_cont)
     agent_cont = DQNAgent(
         state_dim=train_env_cont.state_dim, n_actions=train_env_cont.n_actions,
-        lr=2e-4, gamma=train_params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
+        lr=2e-4, gamma=params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
         use_prioritized_replay=True, rare_priority=3.0,
     )

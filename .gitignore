@@ -20,6 +20,7 @@ book.tex
 *.tex
 !project/presentation/presentation.tex
 !project/final_report/final_report.tex
+!results/*.tex
 *.aux
 *.dvi
 *.log

@@ -59,7 +59,7 @@ class MarketParams:
     spread_options: Tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 2.5)
 
     # ── Episode / discount ───────────────────────────────────────────
-    episode_length: int = 200
+    episode_length: int = 500
     discount: float = 0.99
 
     # ── Derived helpers ──────────────────────────────────────────────
