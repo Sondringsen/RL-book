@@ -364,13 +364,21 @@ def value_iteration_3d(
 
     shifts = sorted({-adv, 0.0, adv})
     T_price = {}
-    exp_dp = {}
+    _exp_dp_base = {}
     for vi in range(n_vol_bins):
         sig = vol_grid[vi]
         for s in shifts:
             Tp = _gaussian_transition_matrix(price_grid, s, sig)
             T_price[(vi, s)] = Tp
-            exp_dp[(vi, s)] = Tp @ price_grid - price_grid
+            _exp_dp_base[(vi, s)] = Tp @ price_grid - price_grid
+
+    # exp_dp_next[(vi, s)]: expected price change when current vol bin is vi,
+    # averaged over the next-period vol v' ~ T_vol[vi, :], because the env
+    # applies the OU update *before* the price step (so price uses vol_{t+1}).
+    exp_dp_next = {
+        (vi, s): sum(T_vol[vi, vp] * _exp_dp_base[(vp, s)] for vp in range(n_vol_bins))
+        for vi in range(n_vol_bins) for s in shifts
+    }
 
     V_next = np.zeros((n_inv, n_price_bins, n_vol_bins))
     for si in range(n_inv):
@@ -381,7 +389,18 @@ def value_iteration_3d(
     for t in range(T_horizon - 1, -1, -1):
         V_new = np.full_like(V_next, -np.inf)
 
-        EV_vol = np.einsum("ipw,vw->ipv", V_next, T_vol)
+        # EV_correct[s] shape (n_inv, n_price, n_vol_curr):
+        #   EV[si, p, vi] = sum_{v'} T_vol[vi,v'] * sum_{p'} T_price[(v',s)][p,p'] * V_next[si,p',v']
+        # This is correct because the env updates vol first, then moves price using vol_{t+1}.
+        EV_correct = {}
+        for s in shifts:
+            # A[v', si, p] = T_price[(v',s)] @ V_next[si,:,v']
+            # V_next[:,:,vp] has shape (n_inv, n_price); multiply by T_price[(vp,s)].T on the right
+            A_s = np.stack([V_next[:, :, vp] @ T_price[(vp, s)].T for vp in range(n_vol_bins)])
+            # A_s shape: (n_vol_next, n_inv, n_price)
+            # sum over v': EV[si,p,vi] = sum_{v'} T_vol[vi,v'] * A_s[v',si,p]
+            EV_correct[s] = np.einsum("vw,wip->ipv", T_vol, A_s)
+            # shape: (n_inv, n_price, n_vol_curr)
 
         for si in range(n_inv):
             I = params.index_to_inventory(si)
@@ -399,8 +418,8 @@ def value_iteration_3d(
 
                     def _q(s_next, shift, base_r, Iprime):
                         return (base_r
-                                + Iprime * exp_dp[(vi, shift)]
-                                + gamma * (T_price[(vi, shift)] @ EV_vol[s_next, :, vi]))
+                                + Iprime * exp_dp_next[(vi, shift)]
+                                + gamma * EV_correct[shift][s_next, :, vi])
 
                     if at_upper and at_lower:
                         Q = _q(si, 0.0, -alpha * I**2, I)

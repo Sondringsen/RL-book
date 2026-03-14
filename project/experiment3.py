@@ -18,7 +18,7 @@ SPREAD_OPTIONS = (0.5, 1.0, 1.5, 2.0, 2.5)
 N_PRICE_BINS = 21
 N_VOL_BINS = 15
 PRICE_HALF_RANGE = 10.0
-VOL_LO, VOL_HI = 0.3, 2.0
+VOL_LO, VOL_HI = 0.05, 0.55
 PRICE_SCALE = PRICE_HALF_RANGE
 SEED = 42
 EVAL_SEED = 123
@@ -63,7 +63,7 @@ def main():
         lr=2e-4, gamma=params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
     )
-    agent_disc.train(train_env_disc, n_episodes=2000, epsilon_decay_steps=150_000, verbose=True)
+    agent_disc.train(train_env_disc, n_episodes=1500, epsilon_decay_steps=150_000, verbose=True)
 
     # ── RL Continuous ─────────────────────────────────────────────────
     print("\n[3/5] Training DQN (continuous state, vectorized) …")
@@ -80,7 +80,7 @@ def main():
         lr=2e-4, gamma=params.discount, batch_size=BATCH_TRAIN, hidden_dim=HIDDEN_TRAIN,
         learning_starts=5_000, tau=0.005, seed=SEED,
     )
-    agent_cont.train(train_env_cont, n_episodes=2000, epsilon_decay_steps=150_000, verbose=True)
+    agent_cont.train(train_env_cont, n_episodes=1500, epsilon_decay_steps=150_000, verbose=True)
 
     # ── Evaluate ───────────────────────────────────────────────────────
     print("\n[4/5] Evaluating (1 000 episodes each) …")

@@ -37,9 +37,9 @@ class MarketParams:
     sigma_base: float = 0.25
 
     # OU volatility dynamics (Phase 3 only)
-    vol_mean_reversion: float = 0.15
-    vol_long_run_mean: float = 1.0
-    vol_of_vol: float = 0.2
+    vol_mean_reversion: float = 0.03
+    vol_long_run_mean: float = 0.25
+    vol_of_vol: float = 0.03
 
     # ── Order arrival  λ(δ) = A · exp(−k · δ) ───────────────────────
     arrival_base: float = 0.5

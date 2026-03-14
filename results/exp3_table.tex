@@ -1,0 +1,13 @@
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Metric & DP & RL (discrete) & RL (continuous) \\
+\midrule
+Mean Reward & 81.66 & 60.01 & 63.87 \\
+Std Reward & 12.28 & 15.03 & 14.15 \\
+\bottomrule
+\end{tabular}
+\caption{Experiment 3 (inventory + price + volatility state, OU dynamics): mean and standard deviation of episode reward over 1\,000 evaluation episodes. DP is optimal for the discretised MDP. RL (discrete) uses the same binned state; RL (continuous) uses exact floats.}
+\label{tab:exp3}
+\end{table}
