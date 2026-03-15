@@ -12,7 +12,7 @@
 \graphicspath{{results/}}
 
 \title{Reinforcement Learning for Market Making:\\
-Dynamic Programming, Deep Q-Networks, and Soft Actor--Critic}
+Dynamic Programming, Deep Q-Networks, and Soft Actor-Critic}
 \author{Sam \and Siddhant \and Sondre}
 \date{}
 
@@ -20,7 +20,7 @@ Dynamic Programming, Deep Q-Networks, and Soft Actor--Critic}
 \maketitle
 
 \begin{abstract}
-This report studies market making as a finite-horizon control problem using Markov Decision Processes (MDPs), Dynamic Programming (DP), and Reinforcement Learning (RL). The methodology is organized as a comparison ladder: first solve a small discretized model exactly with DP, then train RL on the same task with a discrete state representation, and finally relax the representation to continuous state variables and, in the last experiment, continuous actions. Experiments 1--3 therefore compare exact planning against progressively more flexible learned policies, while Experiment 4 moves to a continuous state-action setting trained with Soft Actor--Critic (SAC). The central theme is that DP is the exact benchmark inside the discretized model, whereas RL becomes increasingly attractive as discretization becomes restrictive and continuous control becomes the more natural formulation.
+This report studies market making as a finite-horizon control problem using Markov Decision Processes (MDPs), Dynamic Programming (DP), and Reinforcement Learning (RL). The methodology is organized as a comparison ladder: first solve a small discretized model exactly with DP, then train RL on the same task with a discrete state representation, and finally relax the representation to continuous state variables and, in the last experiment, continuous actions. Experiments 1-3 therefore compare exact planning against progressively more flexible learned policies, while Experiment 4 moves to a continuous state-action setting trained with Soft Actor-Critic (SAC). The central theme is that DP is the exact benchmark inside the discretized model, whereas RL becomes increasingly attractive as discretization becomes restrictive and continuous control becomes the more natural formulation.
 \end{abstract}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ This report studies market making as a finite-horizon control problem using Mark
 
 \subsection{Motivation and Problem Setting}
 
-A market maker repeatedly posts bid and ask quotes, earns spread revenue when orders arrive, and absorbs inventory risk after every fill. The core tradeoff is simple but dynamic: tighter quotes increase execution probability and spread capture, while accumulated inventory makes future price moves more dangerous. This makes market making a natural finite-horizon MDP.
+A market maker repeatedly posts bid and ask quotes, earns spread revenue when orders arrive, and absorbs inventory risk after every fill. The core tradeoff is simple but dynamic: tighter quotes increase execution probability, while accumulated inventory makes future price moves more dangerous. This makes market making a natural finite-horizon MDP.
 
 The methodological challenge is that the same control problem admits very different solution methods depending on how richly it is modeled. If the state, action, and transition law are all small and known, DP gives an exact solution. Once price, volatility, and eventually continuous quote placement and sizing are introduced, exact tabulation becomes less natural and RL becomes the practical alternative. Our report is built around that transition.
 
@@ -43,7 +43,7 @@ The report follows the course progression from exact control to approximate cont
 
 \subsection{Problem Specialization and Practical Relevance}
 
-We study single-asset market making. At each step the agent chooses bid and ask quotes, and in the most realistic version also chooses quote sizes. The objective is not just to maximize spread capture, but to do so while controlling inventory and limiting exposure to adverse price moves. This is a good fit for the course because it has an interpretable small-model DP baseline and a natural extension to higher-dimensional and continuous RL settings.
+We study single-asset market making. At each step the agent chooses bid and ask quotes, and in the most realistic version also chooses quote sizes. The objective is not just to maximize spread capture, but to do so while controlling inventory and limiting exposure to adverse price moves. 
 
 \subsection{Three Versions of the Problem}
 
@@ -51,11 +51,11 @@ Following the project guidance, we work with three nested versions of the same m
 
 \begin{itemize}
     \item \textbf{Ideal full problem.} A rich market state, continuous quote placement and quote sizing, and possibly extra latent signals such as order-flow imbalance or regime variables.
-    \item \textbf{Phase 3 course version.} A realistic but still simulator-friendly version with inventory, price deviation, and stochastic volatility, culminating in continuous state-action control with SAC.
-    \item \textbf{Phase 2 simplified version.} An inventory-only discrete model with constant volatility and a small action grid, chosen precisely because it is small enough to solve exactly with DP.
+    \item \textbf{Phase 3 course version.} A realistic but simplified version with inventory, price deviation, and stochastic volatility, culminating in continuous state-action control with SAC.
+    \item \textbf{Phase 2 simplified version.} An inventory-only discrete model with constant volatility and a small action grid, chosen because it is small enough to solve exactly with DP.
 \end{itemize}
 
-These are not separate problems. They are progressively richer parameterizations of the same control task, which lets us carry the intuition of the small exact model into the larger RL settings.
+These are progressively richer parameterizations of the same control task, which lets us carry the intuition of the small exact model into the larger RL settings.
 
 \subsection{MDP Formulation}
 
@@ -67,15 +67,14 @@ The state always includes the current inventory $I_t$. In richer versions we add
     \begin{cases}
         I_t, & \text{Phase 2 / Experiment 1}, \\
         (I_t, S_t), & \text{Experiment 2}, \\
-        (I_t, S_t, \sigma_t), & \text{Experiment 3}, \\
-        (I_t, \tilde S_t, \tilde \sigma_t), & \text{Experiment 4}.
+        (I_t, S_t, \sigma_t), & \text{Experiment 3 \& 4}
     \end{cases}
 \end{equation}
-In the DP baseline and in the discrete-RL baselines, these variables are placed on finite grids. In the continuous-RL baselines and the SAC experiment, the same economic variables are fed in as continuous features.
+In the DP baseline and in the discrete-RL baselines, these variables are placed on finite grids. In the continuous-RL baselines price and volatility are continuous, and in the SAC experiment (experiment 4) all state variables are continuous.
 
 \subsubsection{Action}
 
-In Experiments 1--3 the action is a discrete pair of asymmetric bid and ask half-spreads:
+In Experiments 1-3 the action is a discrete pair of asymmetric bid and ask half-spreads:
 \begin{equation}
     a_t = (\delta_t^{\mathrm{bid}}, \delta_t^{\mathrm{ask}}).
 \end{equation}
@@ -89,21 +88,7 @@ where both spread placement and order size are chosen continuously.
 
 \subsubsection{Transition Dynamics}
 
-The market maker posts bid and ask quotes around the mid-price $S_t$:
-\begin{equation}
-    \text{bid} = S_t - \delta_t^{\mathrm{bid}}, \qquad
-    \text{ask} = S_t + \delta_t^{\mathrm{ask}}.
-\end{equation}
-
-Customer orders arrive as independent Poisson processes with spread-dependent intensity
-\begin{equation}
-    \lambda(\delta) = A \exp(-k \delta),
-\end{equation}
-so the per-step fill probability on one side is
-\begin{equation}
-    P(\text{fill}\mid \delta) = 1 - \exp(-\lambda(\delta)).
-\end{equation}
-Tighter spreads therefore attract more flow but expose the agent to greater inventory risk.
+The market maker posts bid ($S_t - \delta_t^{\mathrm{bid}}$) and ask ($S_t + \delta_t^{\mathrm{ask}}$) quotes around the mid-price $S_t$. Customer orders arrive as independent Poisson processes with spread-dependent intensity $    \lambda(\delta) = A \exp(-k \delta),$ so the per-step fill probability on one side is $    P(\text{fill}\mid \delta) = 1 - \exp(-\lambda(\delta)).$ Tighter spreads therefore attract more flow but expose the agent to greater inventory risk.
 
 The mid-price evolves according to adverse selection plus noise:
 \begin{equation}
@@ -112,13 +97,7 @@ The mid-price evolves according to adverse selection plus noise:
 \end{equation}
 An ask fill (someone buying from us) signals informed buying pressure and tends to push the price upward; a bid fill has the opposite effect.
 
-In Experiment 3 and the continuous SAC experiment, volatility evolves stochastically via an Ornstein--Uhlenbeck-style process:
-\begin{equation}
-    \Delta \sigma_t = \kappa(\bar \sigma - \sigma_t) + \xi \varepsilon_t^v,
-    \qquad \varepsilon_t^v \sim \mathcal{N}(0,1),
-\end{equation}
-with a lower floor to prevent degenerate volatility values.
-
+In Experiment 3 and the continuous SAC experiment, volatility evolves stochastically via an Ornstein-Uhlenbeck-style process ($\Delta \sigma_t = \kappa(\bar \sigma - \sigma_t) + \xi \varepsilon_t^v, \varepsilon_t^v \sim \mathcal{N}(0,1),$) with a lower floor to prevent degenerate volatility values.
 \subsubsection{Reward and Constraints}
 
 At each step, the reward combines realized spread capture, mark-to-market inventory P\&L, and a quadratic inventory penalty:
@@ -130,13 +109,7 @@ At each step, the reward combines realized spread capture, mark-to-market invent
     -
     \underbrace{\alpha I_t^2}_{\text{inventory penalty}}.
 \end{equation}
-At the terminal step, we apply an additional penalty proportional to the magnitude of remaining inventory to discourage carrying large positions to the end of an episode.
-
-Inventory is bounded by $|I_t| \le I_{\max}$. Fills that would breach the inventory boundary are blocked, so the action space is effectively state-dependent near the edges.
-
-\subsection{Modeling Choices Across Phases}
-
-The Phase 2 simplification keeps only the core inventory-control tradeoff: inventory is the full state, volatility is constant, and the action space is a small discrete grid of bid/ask spreads. Phase 3 restores realism in stages: Experiment 2 adds price, Experiment 3 adds stochastic volatility, and Experiment 4 replaces the grid-based action description with continuous quote placement and sizing. Methodologically, this creates a clean ladder from exact DP to discrete RL to continuous RL.
+At the terminal step, we apply an additional penalty proportional to the magnitude of remaining inventory to discourage carrying large positions to the end of an episode. Inventory is bounded by $|I_t| \le I_{\max}$.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Phase 2: Dynamic Programming Solution}
@@ -144,47 +117,38 @@ The Phase 2 simplification keeps only the core inventory-control tradeoff: inven
 
 \subsection{Simplified Phase 2 Model and DP Method}
 
-The canonical Phase 2 model is the inventory-only formulation used in Experiment 1. The state is
-\begin{equation}
-    s_t = I_t \in \{-I_{\max}, \ldots, I_{\max}\},
-\end{equation}
-and volatility is fixed at $\sigma_{\mathrm{base}}$. With $I_{\max}=5$, the state space contains only $11$ inventory levels, so the problem is small enough to solve exactly.
+The canonical Phase 2 model is the inventory-only formulation used in Experiment 1. The state is $    s_t = I_t \in \{-I_{\max}, \ldots, I_{\max}\},
+$ and volatility is fixed at $\sigma_{\mathrm{base}}$. With $I_{\max}=5$, the state space contains only $11$ inventory levels, so the problem is small enough to solve exactly.
 
-Because the experiments have a finite episode length and an explicit terminal inventory penalty, we solve the discretized model by finite-horizon backward induction:
+Because the experiments have a finite episode length and an explicit terminal inventory penalty, we solve the discretized model by finite-horizon backward induction with terminal condition $    V_T(s) = -\lambda |I_T|.$
 \begin{equation}
-    V_t(s) = \max_a \mathbb{E}\!\left[r_t(s,a,S_{t+1}) + \gamma V_{t+1}(S_{t+1}) \mid S_t=s, A_t=a \right],
+    V_t(s) = \max_a \mathbb{E}\!\left[r_t(s,a,s_{t+1}) + \gamma V_{t+1}(s_{t+1}) \mid s_t=s, A_t=a \right]
 \end{equation}
-with terminal condition
-\begin{equation}
-    V_T(s) = -\lambda |I_T|.
-\end{equation}
-This makes the DP policy time-dependent near the episode end, which is exactly what we want in a market-making problem with terminal inventory control. Within this discretized MDP, DP is the exact benchmark.
+
+This makes the DP policy time-dependent near the episode end, which is exactly what we want in a market-making problem with terminal inventory control.
 
 \subsection{RL Baselines and the Comparison Ladder}
+% The Phase 2 baseline already reveals the core structure of the problem: large positive inventory should tilt the policy toward selling, while large negative inventory should tilt it toward buying. This inventory-skew logic is the key pattern that any effective policy must recover.
 
-The Phase 2 baseline already exposes the key qualitative structure of the problem: high positive inventory should tilt the policy toward selling, and high negative inventory should tilt it toward buying. That inventory-skew logic is the main structural pattern we expect every learned policy to recover.
-
-For Experiments 1--3, we compare methods using a consistent ladder:
-\begin{enumerate}
-    \item \textbf{DP}: exact planning on the discretized finite-horizon MDP.
-    \item \textbf{RL (discrete)}: a DQN trained on the same discretized state representation as DP.
-    \item \textbf{RL (continuous)}: a DQN trained on continuous state features when richer state variables are present.
-\end{enumerate}
-
-This design lets us separate two questions. First, how much performance is lost when we replace exact planning by a learned value-based policy on the same state grid? Second, what changes when we remove the state discretization and let RL consume the raw continuous covariates directly? In that sense, DP is the exact upper bound only for the discretized MDP itself; the continuous-state RL baseline is not solving exactly the same tabular problem, but it is the more flexible approximation that becomes attractive once discretization starts to bite.
+In Experiments 1–3 we compare three methods within a consistent framework: exact dynamic programming (DP) on the discretized finite-horizon MDP, a DQN trained on the same discretized state representation, and a DQN trained on continuous state features when richer variables are introduced. This setup isolates two issues. First, how much performance is lost when exact planning is replaced by a learned value-based policy on the same grid. Second, how the policy changes when discretization is removed and RL consumes raw continuous inputs. DP therefore provides the exact benchmark only for the discretized MDP, while the continuous RL model represents the more flexible approximation once state discretization becomes restrictive.
 
 \subsection{Experiment 1: Inventory-Only DP vs.\ RL}
-
-Experiment 1 is the cleanest validation case. The state contains only inventory, so there is no meaningful distinction yet between a discretized market state and a continuous market state; both would reduce to the same one-dimensional signal. For that reason, Experiment 1 compares DP against the discrete DQN only and uses the result as the anchor for the later richer experiments.
-
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.9\textwidth]{exp1_pnl.png}
-\caption{Experiment 1 cumulative mark-to-market P\&L over 1000 evaluation episodes. In the inventory-only setting, the learned discrete DQN is already close to the exact DP benchmark.}
-\label{fig:exp1_pnl}
-\end{figure}
+\begin{minipage}{0.45\textwidth}
+Experiment 1 is the cleanest validation case. The state contains only inventory, so there is no meaningful distinction between a discretized market state and a continuous market state. For that reason, Experiment 1 compares dynamic programming (DP) against the discrete DQN only and uses the result as the anchor for the later richer experiments. Figure ~\ref{fig:exp1_comparison} shows a qualitative pattern that persists throughout all experiments which is the inventory-skew logic: high positive inventory incentivizes selling, so the ask spread is kept tight (to attract buyers) while the bid spread is widened (to discourage further purchases). High negative inventory produces the opposite behavior. Note also that the reward distributions in Figure \ref{fig:exp1_comparison} for DP and discrete DQN are quite similar indicating that the RL-agent is able to approximate the exact solution.
 
-Figure~\ref{fig:exp1_pnl} plays the role of a sanity check. In the simplest setting, the learned policy approaches the same inventory-management logic as DP, so the RL pipeline is validated before we add extra state variables. Methodologically, this is the reference point against which the richer comparisons should be read.
+
+
+\end{minipage}
+\hfill
+\begin{minipage}{0.53\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/exp1_comparison.png}
+    \caption{Experiment 1 comparison on the $(\text{inventory})$ state. The figure reports policy slices at the mid-price bin, reward distributions, and final inventory distributions for DP and RL with a discretized state.}
+\label{fig:exp1_comparison}
+\end{minipage}
+\end{figure}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Phase 3: Reinforcement Learning in Richer Environments}
@@ -192,34 +156,47 @@ Figure~\ref{fig:exp1_pnl} plays the role of a sanity check. In the simplest sett
 
 \subsection{RL Setup}
 
-Experiments 2 and 3 use two DQN baselines with the same discrete action set but different state representations. The \textbf{discrete} DQN sees the same binned state that DP sees, so it is the closest learned approximation to the exact benchmark. The \textbf{continuous} DQN instead receives the underlying state variables as continuous features, avoiding state discretization while keeping the action space discrete. This is useful because it lets us compare discretized and continuous representations at every stage before moving all the way to continuous control.
-
-Experiment 4 then replaces the DQN family with \textbf{Soft Actor--Critic (SAC)}. This is the appropriate shift once the action itself becomes continuous: value-based methods are natural when the action set is enumerable, whereas actor-critic methods are better suited to learning in a continuous action space without an explicit discrete maximization over actions.
+Experiments 2 and 3 use two DQN baselines with the same discrete action set but different state representations. The \textbf{discrete} DQN sees the same binned state that DP sees, so it is the closest learned approximation to the exact benchmark. The \textbf{continuous} DQN instead receives the underlying state variables as continuous features, avoiding state discretization while keeping the action space discrete. Experiment 4 then replaces the DQN family with \textbf{Soft Actor-Critic (SAC)}. This is the appropriate shift once the action itself becomes continuous: value-based methods are natural when the action set is enumerable, whereas actor-critic methods are better suited to learning in a continuous action space without an explicit discrete maximization over actions.
 
 \subsection{Experiment 2: Inventory and Price}
+\begin{figure}[h]
+\centering
+\begin{minipage}{0.4\textwidth}
 
-Experiment 2 extends the state to include both inventory and price deviation:
-\begin{equation}
-    s_t = (I_t, S_t) \in \{-I_{\max}, \ldots, I_{\max}\} \times \mathcal{G}_S.
-\end{equation}
-The price grid has $21$ bins over $[-10,10]$, so the DP model has $11 \times 21 = 231$ states. We then compare three policies on this problem: DP on the discretized grid, a DQN trained on the same binned state, and a DQN trained on the exact continuous price input. This makes Experiment 2 the first direct test of the discrete-versus-continuous RL representation question.
+Experiment 2 extends the state to include both inventory and price deviation, following $    s_t = (I_t, S_t) \in \{-I_{\max}, \ldots, I_{\max}\} \times \mathcal{G}_S$. The price grid has $21$ bins over $[-10,10]$, so the DP model contains $11 \times 21 = 231$ states. Experiment 2 provides the first direct test of the discrete-versus-continuous representation question in the RL setting.
 
-\begin{figure}[htbp]
+\end{minipage}
+\hfill
+\begin{minipage}{0.58\textwidth}
 \centering
 \includegraphics[width=\textwidth]{exp2_comparison.png}
 \caption{Experiment 2 comparison on the $(\text{inventory}, \text{price})$ state. The figure reports policy slices at the mid-price bin, reward distributions, cumulative P\&L, and final inventory distributions for DP, RL with a discretized state, and RL with continuous state inputs.}
 \label{fig:exp2}
+\end{minipage}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[h]
+\centering
+\begin{minipage}{0.48\textwidth}
+Figures~\ref{fig:exp2} and~\ref{fig:exp2_heatmap} show the first clear benefit of the comparison ladder. Inventory remains the dominant control signal, but the problem is now genuinely two-dimensional. Dynamic programming (DP) is still the exact benchmark on the binned model. From the reward and P\&L distribution in Figure \ref{fig:exp2} we can see that the continuous DQN performs better than the discrete DQN which is to be expected as it is a richer model. The continuous DQN could potentially also be better than DP if the bins are too wide or do not cover the appropriate range.
+
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
 \centering
 \includegraphics[width=\textwidth]{exp2_policy_heatmap.png}
-\caption{Experiment 2 policy heatmaps over inventory and price deviation. DP provides the exact benchmark on the grid, the discrete DQN shows how well RL can match that benchmark, and the continuous DQN shows how the policy changes once price is no longer binned for the learner.}
+\caption{Experiment 2 policy heatmaps over inventory and price deviation. DP provides the exact benchmark on the grid, the discrete DQN shows how well RL can match that benchmark, and the continuous DQN illustrates how the policy changes once price is no longer discretized for the learner.}
 \label{fig:exp2_heatmap}
+\end{minipage}
 \end{figure}
 
-Figures~\ref{fig:exp2} and~\ref{fig:exp2_heatmap} show the first real benefit of the comparison ladder. Inventory remains the dominant control signal, but the problem is now genuinely two-dimensional. DP is still the exact benchmark on the binned model. The discrete DQN tells us how much of that benchmark can be recovered by value-based RL on the same grid, while the continuous DQN tests whether replacing the price bin by the exact floating-point input yields a smoother or more flexible learned policy. The main methodological lesson is that once price enters the state, representation choice becomes part of the problem, not just the optimizer.
+Price deviation itself has only a modest effect on policy behavior in our calibration. A deviation of $\pm 10$ corresponds to a $10\%$ move from the starting level of $100$, which is already absorbed by the spread-capture and inventory P\&L components. As a result, the optimal spreads change only slightly across price levels. The practical implication is that normalization becomes more important when comparing assets with very different price scales; within a single asset calibrated around a fixed starting price, inventory remains the dominant dimension.
 
+As seen in Figure~\ref{fig:exp2_heatmap}, the continuous DQN yields a smoother policy because Q-values are modeled as a continuous function of the raw state rather than constant within each bin.
+
+\begin{figure}[h]
+\centering
+\begin{minipage}{0.45\textwidth}
 \subsection{Experiment 3: Inventory, Price, and Volatility}
 
 Experiment 3 adds stochastic volatility to the state:
@@ -227,42 +204,59 @@ Experiment 3 adds stochastic volatility to the state:
     s_t = (I_t, S_t, \sigma_t)
     \in \{-I_{\max}, \ldots, I_{\max}\} \times \mathcal{G}_S \times \mathcal{G}_{\sigma}.
 \end{equation}
-In the implementation, the price grid has $15$ bins and the volatility grid has $9$ bins, producing a total discretized state space of $11 \times 15 \times 9 = 1{,}485$ states. As in Experiment 2, we compare DP, a discrete-state DQN, and a continuous-state DQN. The difference is that the continuous baseline now receives both price and volatility as raw features rather than as bins.
 
-\begin{figure}[htbp]
+In the implementation, the price grid has $21$ bins and the volatility grid has $15$ bins, producing a total discretized state space of $11 \times 21 \times 15 = 3{,}465$ states.
+
+\end{minipage}
+\hfill
+\begin{minipage}{0.5\textwidth}
 \centering
 \includegraphics[width=\textwidth]{exp3_comparison.png}
 \caption{Experiment 3 comparison on the $(\text{inventory}, \text{price}, \text{volatility})$ state. The policy slice is shown at the mid-price and mid-volatility bin, together with reward and inventory diagnostics for DP, discrete-state RL, and continuous-state RL.}
 \label{fig:exp3}
+\end{minipage}
 \end{figure}
 
-\begin{figure}[htbp]
+
+\begin{figure}[h]
+\centering
+\begin{minipage}{0.4\textwidth}
+
+Figures~\ref{fig:exp3} and~\ref{fig:exp3_heatmap} largely replicate the findings from Experiment 2, but with one notable difference. Adding stochastic volatility makes the reward signal noisier, since inventory P\&L now depends on the joint interaction of inventory, adverse selection, and a time-varying volatility. This is visible in the reward distributions: the gap between the continuous DQN and DP is wider in Experiment 3 than in Experiment 2. In experiment 3 the continuous DQN barely achieves better rewards than discrete DQN, suggesting that the richer representation helps less when the reward process itself is noisy. The continuous DQN still learns a smoother policy than the discrete DQN which has a more fragmented policy. Overall the policy learned by continuous DQN more closely resembles the DP solution.
+
+\end{minipage}
+\hfill
+\begin{minipage}{0.58\textwidth}
 \centering
 \includegraphics[width=\textwidth]{exp3_policy_heatmap.png}
 \caption{Experiment 3 policy heatmaps at the mid-volatility slice. The figure highlights how policy structure changes as we move from exact DP to discrete-state RL and then to continuous-state RL.}
 \label{fig:exp3_heatmap}
+\end{minipage}
 \end{figure}
 
-Figures~\ref{fig:exp3} and~\ref{fig:exp3_heatmap} show the same methodology under a harder state process. Once volatility is part of the state, the reward becomes much noisier because inventory P\&L depends on the interaction of inventory, adverse selection, and stochastic volatility. The three-way comparison now becomes more informative: DP still supplies the exact benchmark on the discretized MDP, the discrete DQN tests whether RL can reproduce that benchmark on the same grid, and the continuous DQN tests whether feeding in raw price and volatility improves generalization enough to offset the harder learning problem. This is exactly the regime in which DP is still valuable as a benchmark, but continuous RL starts to look more like the eventual target methodology.
+Comparing the heatmaps of Experiments 2 and 3 (Figures~\ref{fig:exp2_heatmap} and ~\ref{fig:exp3_heatmap}), the overall policy structure is very similar: inventory remains the dominant control signal and the same directional skew is present across all three methods. The main visible difference is that the Experiment 3 policies exhibit somewhat smoother transitions across the state space, which is consistent with the noisier reward signal washing out sharper action boundaries during training.
 
 \subsection{Experiment 4: Continuous State-Action Control with SAC}
 
-The final experiment removes the grid-based action simplification and moves to a continuous state-action formulation. The state is
-\begin{equation}
-    s_t = (I_t, \tilde S_t, \tilde \sigma_t) \in [-1,1] \times \mathbb{R} \times \mathbb{R}_+,
-\end{equation}
+The final experiment removes the grid-based action simplification and moves to a continuous state-action formulation. The state is $s_t = (I_t, S_t, \sigma_t) \in [-1,1] \times \mathbb{R} \times \mathbb{R}_+,$
 where inventory is continuous in $[-1,1]$, price deviation is normalized by a fixed scale, and volatility is normalized by its long-run mean. The action includes both quote placement and quote size:
 \begin{equation}
     a_t = (\delta_t^{\mathrm{bid}}, \delta_t^{\mathrm{ask}}, q_t^{\mathrm{bid}}, q_t^{\mathrm{ask}}),
 \end{equation}
 with continuous spread bounds $\delta \in [0.1, 3.0]$ and continuous quote-size bounds $q \in [0, 0.15]$. The environment keeps the same economic structure as the earlier experiments: spread-dependent Poisson fills, adverse selection, OU-style stochastic volatility, quadratic inventory penalty, and a terminal inventory penalty.
 
-This is the closest setting to the full objective of the project. DP is no longer a natural comparator because both the state and action spaces are continuous, and a DQN is no longer the right tool because the action is not enumerable. We therefore train a Soft Actor--Critic policy with Stable-Baselines3 using an MLP policy, discount factor $\gamma=0.99$, learning rate $3\times 10^{-4}$, replay buffer of size $100{,}000$, batch size $128$, soft target update $\tau=0.005$, and automatic entropy tuning. The notebook uses a small-budget run of $20{,}000$ environment steps, with deterministic evaluation every $10{,}000$ steps and a final detailed evaluation over $500$ fresh episodes.
-
-Over 500 evaluation episodes, the trained SAC policy achieved the following summary metrics:
-
+This is the closest setting to the full objective of the project. DP is no longer a natural comparator because both the state and action spaces are continuous, and a DQN is no longer the right tool because the action is not enumerable. We therefore use the Soft Actor-Critic algorithm.
 \begin{table}[htbp]
 \centering
+\begin{minipage}{0.48\textwidth}
+
+The trained SAC policy shows positive but modest performance. Mean reward and episode P\&L are positive, indicating profitability on average, though high reward variability keeps the Sharpe ratio low. Inventory remains well controlled, with mean absolute inventory of $0.255$ and terminal inventory of $0.292$, suggesting the policy has learned inventory mean reversion rather than simply maximizing fills.
+
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+
 \begin{tabular}{lc}
 \toprule
 Metric & Value \\
@@ -277,40 +271,65 @@ Mean $|I_T|$ & 0.292 \\
 \end{tabular}
 \caption{Experiment 4 continuous-control SAC evaluation metrics, recorded over 500 episodes.}
 \label{tab:continuous_metrics}
+\end{minipage}
 \end{table}
 
-The SAC results are positive but deliberately modest, which is exactly what we should expect from a short-budget continuous-control run. Mean reward and mean episode P\&L are both positive, so the learned policy is profitable on average. At the same time, the reward standard deviation is large relative to the mean, which keeps the Sharpe-like ratio low. Inventory is controlled reasonably well: the mean absolute inventory of $0.255$ and mean absolute final inventory of $0.292$ are comfortably inside the hard inventory bounds, showing that the policy has learned mean reversion rather than simply maximizing fills. The main interpretation is therefore not that SAC has fully solved the realistic problem, but that it already learns the correct qualitative market-making behavior in the fully continuous setting and does so without any state or action discretization.
+Inspecting the learned policy functions in Figure~\ref{fig:exp4_heatmap} reveals several additional structural patterns. First, ask quote size is approximately the mirror image of bid quote size across inventory levels and volatility levels: when the agent posts large ask quantities (eager to sell), it posts small bid quantities (reluctant to buy), and vice versa. This near-inversion is consistent with a policy that is simultaneously managing inventory in both directions. Second, the bid spread $\delta^{\mathrm{bid}}$ displays a similar approximate inversion with bid quote size: when the agent wants to buy aggressively it both tightens the bid spread and increases bid size. This pattern is somewhat less pronounced for the ask dimension, and could be because inventory enters the reward symmetrically but the adverse-selection term introduces an asymmetry. Third, the effect of stochastic volatility is even more pronounced than in Experiment 3. In Figure~\ref{fig:exp4_vol_policy} at high inventory and volatility the agent dramatically increases the bid spread and tightens the ask spread, becoming more urgently willing to unwind. The reverse holds at low inventory. Fourth, the agent also responds to price level: when prices are low relative to the starting level the agent is less willing to buy, reflecting that a further price decline would amplify mark-to-market losses on a long position.
 
-\subsection{From DP to RL as Complexity Grows}
-
-The progression from Experiments 1 through 4 makes the methodology explicit. DP is the right tool when the model is known and the discretized state-action space is small enough to enumerate. Discrete-state RL is the closest learned approximation to that benchmark. Continuous-state RL then relaxes the representation while keeping the same economic task, and SAC finally removes the discrete action grid entirely.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.8\textwidth]{exp2_convergence_time.png}
-\caption{Experiment 2 convergence times. Even in the first nontrivial two-dimensional setting, exact DP and learned RL occupy very different computational regimes.}
-\label{fig:exp2_runtime}
+\begin{figure}
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{results/exp4_policy_inventory_volatility.png}
+        \caption{Experiment 4 policy heatmaps over inventory, price deviation, and volatility.}
+        \label{fig:exp4_heatmap}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{results/exp4_delta_bid_inventory_price.png}
+        \caption{Bid policies with varying volatility.}
+        \label{fig:exp4_vol_policy}
+    \end{subfigure}
+    \caption{Results from experiment 4.}
+    \label{fig:exp4_combined}
 \end{figure}
 
-Figure~\ref{fig:exp2_runtime} illustrates the computational tradeoff directly. DP is extremely attractive when the discretized model is still small enough to be solved within reasonable time. But the cost of DP grows with every added state dimension and with every refinement of the discretization, while RL learns from sampled interaction and does not require an exhaustive sweep over a growing grid. Experiment 3 already pushes that tradeoff harder, and Experiment 4 removes exhaustive tabulation altogether by moving to continuous state and action spaces.
+
+\subsection{From DP to RL as Complexity Grows}
+The progression from Experiments 1 through 4 clarifies the methodological ladder. DP is appropriate when the model is known and the discretized state–action space is small enough to enumerate. Discrete-state RL serves as the closest learned approximation to that benchmark. Continuous-state RL then relaxes the representation while keeping the same economic task, and SAC finally removes the discrete action grid entirely.
+
+The computational tradeoff appears clearly in the convergence times from Experiment 2. Exact DP converges in about 1.8 seconds, while the discrete DQN requires roughly 57.9 seconds and the continuous DQN about 52.0 seconds. DP is therefore extremely attractive when the discretized model remains small enough to solve directly. However, its computational cost grows rapidly as state dimensions and discretization resolution increase, whereas RL scales through sampled interaction rather than exhaustive enumeration. Experiment 3 already pushes this tradeoff further, and Experiment 4 removes tabulation entirely by moving to continuous state and action spaces.
 
 \begin{table}[htbp]
 \centering
+\begin{minipage}{0.33\textwidth}
+
+Table~\ref{tab:tractability} summarizes how the role of each method evolves as model complexity increases. When the state space is small, dynamic programming (DP) remains the most direct solution because exact planning is feasible. Discrete-state RL then acts as the closest learned approximation to that benchmark.
+
+
+\end{minipage}
+\hfill
+\begin{minipage}{0.65\textwidth}
+\centering
 \begin{tabular}{lcccc}
 \toprule
-Experiment & State & $|\mathcal{S}|$ & DP tractable? & RL role \\
+Exp. & State & $|\mathcal{S}|$ & DP tractable? & RL role \\
 \midrule
-Experiment 1 & $I$ & $11$ & Yes & Validation against DP \\
-Experiment 2 & $(I,S)$ & $231$ & Yes & Comparison in richer state \\
-Experiment 3 & $(I,S,\sigma)$ & $1{,}485$ & Yes, but slower & Preferred approximation method \\
-Experiment 4 & continuous $(I,S,\sigma)$ & $\infty$ & No & Required \\
+1 & $I$ & $11$ & Yes & Validation\\
+2 & $(I,S)$ & $231$ & Yes & Comparison \\
+3 & $(I,S,\sigma)$ & $3{,}465$ & Slower & Preferred\\
+4 & cont. $(I,S,\sigma)$ & $\infty$ & No & Required \\
 \bottomrule
 \end{tabular}
 \caption{How the role of DP and RL changes as model complexity grows.}
 \label{tab:tractability}
+\end{minipage}
 \end{table}
 
-The most useful interpretation is therefore methodological rather than ideological: DP is best where exact planning is feasible, discrete RL is the nearest learned approximation to that exact benchmark, and continuous RL is the more scalable representation once discretization becomes restrictive.
+As additional state variables are introduced, discretization becomes increasingly restrictive and the computational burden of DP grows. Continuous-state RL therefore becomes the more scalable approach once the state space is too large to enumerate.
+
+Across Experiments we observe a consistent performance ordering: DP $\ge$ continuous-state RL $\ge$ discrete-state RL. DP is the exact benchmark for the discretized MDP and therefore constitutes an upper bound for the discrete DQN on the same grid. The continuous-state DQN escapes that grid entirely and in practice sits between the two. Crucially, this ordering reverses when grids are very coarse: a coarse grid makes the DP solution less faithful to the underlying continuous task, so the continuous-state RL can outperform DP on true-environment metrics even though it cannot beat DP within the discretized model. The finer the grid, the more accurate DP becomes as a representation of the real task, and the more the ordering DP $\ge$ continuous RL is restored. However, the finer the grid the bigger the state space becomes as well, which makes DP computationally expensive.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Discussion}
@@ -321,10 +340,6 @@ The most useful interpretation is therefore methodological rather than ideologic
 Several qualitative patterns are consistent across the experiments. First, inventory mean reversion is the dominant structural feature of the policy throughout the project. Second, once price is added to the state, the representation itself matters: discrete and continuous RL are no longer solving the same approximation problem. Third, once volatility is added, the reward becomes materially noisier and the gap between exact planning and approximate learning becomes more informative.
 
 The project also shows that ``comparing against DP'' must be interpreted carefully. DP is an exact upper bound only for the same discretized MDP. The discrete DQN is therefore the closest learned comparator, while the continuous DQN and the SAC policy trade exact comparability for a representation that is closer to the eventual realistic control problem.
-
-\subsection{Strengths and Limitations}
-
-The main strength of the project is that the same market-making task is carried through a coherent methodological ladder. That makes the comparisons meaningful: we are not switching problems, only enlarging the state and action descriptions and relaxing the representation assumptions. The main limitation is equally clear: as the environment becomes more realistic, the reward signal gets noisier and the comparisons become less exact, especially once the continuous-control SAC experiment departs from the discrete-action setup.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
@@ -337,14 +352,14 @@ This project implements a coherent progression from exact planning to continuous
 \subsection{DQN Agent Architecture}
 
 \textbf{Network.}
-For Experiments 1--3, both the online network $Q_\theta$ and the target network $Q_{\theta^-}$ are multilayer perceptrons with two hidden ReLU layers:
+For Experiments 1-3, both the online network $Q_\theta$ and the target network $Q_{\theta^-}$ are multilayer perceptrons with two hidden ReLU layers:
 \[
   \mathrm{Linear}(d_s, h) \to \mathrm{ReLU} \to \mathrm{Linear}(h, h) \to \mathrm{ReLU} \to \mathrm{Linear}(h, |\mathcal{A}|)
 \]
 where $d_s$ is the state dimension, $|\mathcal{A}| = n^2$ is the number of joint bid/ask spread actions, and the hidden width $h$ is chosen per experiment (larger in the richer state settings).
 
 \textbf{Double DQN.}
-The online network selects the $\epsilon$-greedy next action; the target network evaluates it:
+The online network selects the greedy next action; the target network evaluates it:
 \[
   y_t = r_t + \gamma \cdot Q_{\theta^-}\!\left(s_{t+1},\; \arg\max_{a}\, Q_\theta(s_{t+1}, a)\right)
 \]
@@ -356,7 +371,7 @@ Huber (Smooth $L_1$) loss is minimized over mini-batches drawn from an experienc
   \mathcal{L}(\theta) = \mathrm{SmoothL_1}\!\left(Q_\theta(s, a),\; y_t\right)
 \]
 
-\textbf{Optimiser and target network.}
+\textbf{Optimizer and target network.}
 Parameters are updated with Adam. The target network is updated by soft Polyak averaging after every gradient step:
 
 \[
